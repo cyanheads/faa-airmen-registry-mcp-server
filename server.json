@@ -16,6 +16,26 @@
       "version": "0.1.0",
       "environmentVariables": [
         {
+          "name": "FAA_AIRMEN_MIRROR_DIR",
+          "description": "Persistent local mirror directory; defaults to the platform user-data directory.",
+          "format": "string",
+          "isRequired": false
+        },
+        {
+          "name": "FAA_AIRMEN_INCLUDE_LOCATION",
+          "description": "Opt in to city and ZIP import, display and filtering.",
+          "format": "string",
+          "isRequired": false,
+          "default": "false"
+        },
+        {
+          "name": "FAA_AIRMEN_STALE_AFTER_DAYS",
+          "description": "Source-age warning threshold in days, integer 1–366.",
+          "format": "string",
+          "isRequired": false,
+          "default": "45"
+        },
+        {
           "name": "MCP_LOG_LEVEL",
           "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
           "format": "string",
@@ -34,6 +54,26 @@
       "runtimeHint": "npx",
       "version": "0.1.0",
       "environmentVariables": [
+        {
+          "name": "FAA_AIRMEN_MIRROR_DIR",
+          "description": "Persistent local mirror directory; defaults to the platform user-data directory.",
+          "format": "string",
+          "isRequired": false
+        },
+        {
+          "name": "FAA_AIRMEN_INCLUDE_LOCATION",
+          "description": "Opt in to city and ZIP import, display and filtering.",
+          "format": "string",
+          "isRequired": false,
+          "default": "false"
+        },
+        {
+          "name": "FAA_AIRMEN_STALE_AFTER_DAYS",
+          "description": "Source-age warning threshold in days, integer 1–366.",
+          "format": "string",
+          "isRequired": false,
+          "default": "45"
+        },
         {
           "name": "MCP_TRANSPORT_TYPE",
           "description": "Selects the HTTP transport.",
