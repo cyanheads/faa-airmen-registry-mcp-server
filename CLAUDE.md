@@ -15,6 +15,7 @@
 
 - Local-only deployment; never offer a public hosted endpoint. Docker remains a supported local deployment option.
 - Never persist or return street addresses. Discard street columns before persistence; city and ZIP output require explicit operator opt-in.
+- `FAA_AIRMEN_REDACT_PII` is on by default for every transport and applies at serving time only; it never changes what the mirror imports. While on, name-mode searches need both `lastName` and `firstName`, `nameMatch: "prefix"` and `city`/`zipCode` filters are refused, city and ZIP are omitted from output even with `FAA_AIRMEN_INCLUDE_LOCATION=true`, and `faa_airmen_check_medical_status` refuses every call. Refusals carry the reason `pii_redacted`, and every successful response carries `piiRedacted`. A personal local install that wants the full surface sets `FAA_AIRMEN_REDACT_PII=false`.
 - Medical fields are informational FAA snapshot records. Never infer medical fitness, current operational privileges, instructor currency, or Part 107 recurrent-training currency.
 - A missing airman is absent from the releasable snapshot, not evidence that a person is unlicensed.
 - Raw FAA data and real personal fixtures must never be committed or packaged. Keep mirror data under `/data/`, excluded from Git, npm, MCPB, and Docker context; tests use synthetic identities.
@@ -59,9 +60,9 @@ The six definitions live in `src/mcp-server/tools/definitions/`. Use `verify-cer
 
 Each handler calls `getAirmenRegistryService()`, passes `ctx` for cancellation, writes the returned enrichment with `ctx.enrich(result.enrichment)`, and returns `result.data`. Shared `formatResult` and the matching list/single trailer render every domain and enrichment value losslessly.
 
-`src/config/server-config.ts` maps `mirrorDir`, `includeLocation`, and `staleAfterDays` through `parseEnvConfig` to `FAA_AIRMEN_MIRROR_DIR`, `FAA_AIRMEN_INCLUDE_LOCATION`, and `FAA_AIRMEN_STALE_AFTER_DAYS`. Location accepts only `true`/`false` and defaults off; stale age is an integer 1–366, default 45. The mirror directory defaults to platform user-data storage.
+`src/config/server-config.ts` maps `mirrorDir`, `includeLocation`, `redactPii`, and `staleAfterDays` through `parseEnvConfig` to `FAA_AIRMEN_MIRROR_DIR`, `FAA_AIRMEN_INCLUDE_LOCATION`, `FAA_AIRMEN_REDACT_PII`, and `FAA_AIRMEN_STALE_AFTER_DAYS`. Location accepts only `true`/`false` and defaults off; redaction defaults on and only `false` (any case, trimmed) turns it off, so no value fails startup; stale age is an integer 1–366, default 45. The mirror directory defaults to platform user-data storage.
 
-`createApp()` in `src/index.ts` sets bare `name` and `title`, registers all six tools, and initializes the service in `setup()` without opening or downloading a mirror. The compiled `dist/cli/mirror.js` alone handles operator `init`, `refresh`, `verify`, and `status`.
+`createApp()` in `src/index.ts` sets bare `name` and `title`, registers all six tools, and initializes the service in `setup()` without opening or downloading a mirror. The compiled `dist/cli/mirror.js` alone handles operator `init`, `refresh`, `verify`, `status`, and `prune`; `src/cli/mirror-command.ts` holds its dispatch, cancellation, and output.
 
 ## Context
 
@@ -94,7 +95,9 @@ See framework CLAUDE.md and the `api-errors` skill for the full auto-classificat
 ```text
 src/
   index.ts
-  cli/mirror.ts
+  cli/
+    mirror.ts
+    mirror-command.ts
   config/server-config.ts
   services/airmen/
     airmen-registry-service.ts
@@ -186,7 +189,8 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run mirror:init` | Initialize the FAA snapshot through compiled Node CLI |
 | `bun run mirror:refresh` | Download and publish a replacement snapshot |
 | `bun run mirror:verify` | Check the published snapshot read-only |
-| `node dist/cli/mirror.js status` | Inspect readiness and refresh state |
+| `node dist/cli/mirror.js status` | Inspect readiness, refresh state, and superseded generations |
+| `node dist/cli/mirror.js prune` | Delete generations `CURRENT` doesn't name; stop every server process first |
 | `bun run devcheck` | Lint + format + typecheck + security + changelog sync |
 | `bun run audit:fix` | `bun audit fix` — upgrade vulnerable packages to the lowest safe version within existing ranges (`--dry-run` previews, `--latest` rewrites ranges). First response when `devcheck` flags a transitive advisory; then `bun update <name>`, then `bun dedupe` |
 | `bun run audit:refresh` | Delete `bun.lock` and reinstall. Last resort after `audit:fix`, `bun update <name>`, and `bun dedupe` — re-resolves every ranged dep (the framework pin included) and rewrites the lockfile as `lockfileVersion: 2` |
@@ -203,7 +207,7 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run changelog:check` | Verify `CHANGELOG.md` is in sync (used by devcheck) |
 | `bun run bundle` | Build, pack, and clean a `.mcpb` for one-click Claude Desktop install |
 
-Lifecycle scripts consume exported variables; Node does not load `.env` for the CLI automatically. Use `node --env-file=.env dist/cli/mirror.js <init|refresh|verify|status>` when configuring from that file. MCP startup loads its own `.env`. Keep the mirror directory and location policy aligned between CLI and server.
+Lifecycle scripts consume exported variables; Node does not load `.env` for the CLI automatically. Use `node --env-file=.env dist/cli/mirror.js <init|refresh|verify|status|prune>` when configuring from that file. MCP startup loads its own `.env`. Keep the mirror directory and location policy aligned between CLI and server.
 
 **CI is one file.** `.github/workflows/codeql.yml` (scaffolded) is the only GitHub Actions workflow: CodeQL is GitHub-owned end to end, and the file runs only while the repo's CodeQL *default setup* is turned off. Verification — `devcheck`, tests, the release gates — runs locally; don't add a workflow that re-runs it.
 
