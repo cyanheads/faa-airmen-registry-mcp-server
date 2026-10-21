@@ -210,7 +210,7 @@ export const nameInput = {
     .enum(['exact', 'prefix'])
     .optional()
     .describe(
-      'Compare each supplied name field exactly or from its beginning; default exact in name mode.',
+      'Compare each supplied name field exactly or from its beginning; default exact for name searches.',
     ),
 };
 /** Flat identity selector; service validates mutually exclusive modes. */
@@ -224,7 +224,7 @@ export const identityInput = {
     .string()
     .optional()
     .describe(
-      'Opaque A or C plus seven digits, for example A9999999; not a certificate number. Trimmed and uppercased.',
+      'Opaque FAA Unique ID returned by faa_airmen_verify_certificate in name mode, A or C plus seven digits, for example A9999999; not a certificate number. Trimmed and uppercased.',
     ),
   ...nameInput,
 };

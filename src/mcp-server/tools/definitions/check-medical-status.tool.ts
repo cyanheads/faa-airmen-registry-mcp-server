@@ -39,7 +39,7 @@ export const checkMedicalStatusTool = tool('faa_airmen_check_medical_status', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'Invalid or blank semantic identity selector.',
       recovery:
-        'Call faa_airmen_list_reference with topic identifiers, then retry with a Unique ID or a nonblank name selector.',
+        'Use faa_airmen_verify_certificate with mode name and lastName to obtain a Unique ID, then retry faa_airmen_check_medical_status with that uniqueId.',
       retryable: false,
       thrownBy: 'service',
     },

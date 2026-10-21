@@ -99,20 +99,29 @@ const ratings: Record<string, string> = {
 const obsolete = new Set(
   'AIRCR AIRPL ALL ENGINE FAR LTA LTO METEOR NAV RADIO ROTOR SPUR'.split(' '),
 );
+const medical: Record<string, string> = { '1': 'First', '2': 'Second', '3': 'Third' };
+
+function ownValue<T>(table: Record<string, T>, code: string): T | undefined {
+  return Object.hasOwn(table, code) ? table[code] : undefined;
+}
+
 /** Describe only source-documented codes; unknown values remain unchanged. */
 export function describeCode(
   code: string,
   kind: 'type' | 'rating' | 'medical' | 'level',
   certificateType?: string,
 ): Code {
+  const certificateLevels = ownValue(levels, certificateType ?? '');
   const description =
     kind === 'type'
-      ? types[code]
+      ? ownValue(types, code)
       : kind === 'rating'
-        ? ratings[code]
+        ? ownValue(ratings, code)
         : kind === 'medical'
-          ? ({ '1': 'First', '2': 'Second', '3': 'Third' } as Record<string, string>)[code]
-          : levels[certificateType ?? '']?.[code];
+          ? ownValue(medical, code)
+          : certificateLevels
+            ? ownValue(certificateLevels, code)
+            : undefined;
   return { code, ...(description ? { description } : {}) };
 }
 /** Add an obsolete marker only when the FAA table explicitly marks it. */

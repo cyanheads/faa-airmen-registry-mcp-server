@@ -45,15 +45,22 @@ function allowed(url: URL): void {
   }
 }
 
-async function get(url: string, fetcher: typeof fetch, signal: AbortSignal): Promise<Response> {
+async function get(
+  url: string,
+  fetcher: typeof fetch,
+  signal: AbortSignal,
+): Promise<{ response: Response; url: string }> {
   let current = new URL(url);
-  const archiveRequest = /\/CS\d{6}\.zip$/i.test(current.pathname);
+  const archiveIdentity = /\/CS\d{6}\.zip$/i.exec(current.pathname)?.[0].toUpperCase();
   for (let redirects = 0; redirects <= 5; redirects++) {
     allowed(current);
-    if (archiveRequest && !/\/CS\d{6}\.zip$/i.test(current.pathname))
+    if (
+      archiveIdentity &&
+      /\/CS\d{6}\.zip$/i.exec(current.pathname)?.[0].toUpperCase() !== archiveIdentity
+    )
       throw new MirrorError(
         'acquisition',
-        'FAA archive redirected outside the published CSV archive pattern.',
+        'FAA archive redirected outside the advertised snapshot month.',
       );
     const response = await fetcher(current, {
       redirect: 'manual',
@@ -79,7 +86,7 @@ async function get(url: string, fetcher: typeof fetch, signal: AbortSignal): Pro
         retryAfterMs,
       );
     }
-    return response;
+    return { response, url: current.href };
   }
   throw new MirrorError('acquisition', 'FAA source exceeded the permitted redirect count.');
 }
@@ -119,7 +126,7 @@ export async function acquireSource(
 ): Promise<AcquiredSource> {
   const deadline = AbortSignal.any([signal, AbortSignal.timeout(600_000)]);
   const page = await retry(async (attemptSignal) => {
-    const response = await get(SOURCE_PAGE, fetcher, attemptSignal);
+    const { response } = await get(SOURCE_PAGE, fetcher, attemptSignal);
     if (!response.body) throw new Error('Missing response stream');
     const chunks: Uint8Array[] = [];
     let length = 0;
@@ -154,9 +161,9 @@ export async function acquireSource(
       'acquisition',
       'FAA page did not advertise a recognized monthly CSV archive.',
     );
-  const sha256 = await retry(async (attemptSignal) => {
+  const downloaded = await retry(async (attemptSignal) => {
     await rm(path, { force: true });
-    const response = await get(selected.archiveUrl, fetcher, attemptSignal);
+    const { response, url } = await get(selected.archiveUrl, fetcher, attemptSignal);
     if (!response.body) throw new Error('Missing response stream');
     if (/text\/html/i.test(response.headers.get('content-type') ?? '')) {
       await response.body.cancel();
@@ -181,11 +188,11 @@ export async function acquireSource(
       }
       if (length === 0) throw new Error('Empty response stream');
       await file.sync();
-      return hash.digest('hex');
+      return { sha256: hash.digest('hex'), archiveUrl: url };
     } finally {
       await file.close();
       if (!response.body.locked) await response.body.cancel();
     }
   }, deadline);
-  return { ...selected, sha256, downloadedAt: clock().toISOString() };
+  return { ...selected, ...downloaded, downloadedAt: clock().toISOString() };
 }

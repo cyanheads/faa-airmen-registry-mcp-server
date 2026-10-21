@@ -168,7 +168,7 @@ function identityWhere(value: Selector | NormalizedName): Where {
   if ('mode' in value && value.mode === 'id')
     return { sql: 'a.unique_id=?', bindings: [value.uniqueId] };
   const name = value as NormalizedName;
-  const clauses = ['v.unique_id=a.unique_id', "v.origin='basic'"],
+  const clauses = ["v.origin='basic'"],
     bindings: string[] = [];
   for (const [key, column] of [
     ['lastName', 'last_name_normalized'],
@@ -194,7 +194,7 @@ function identityWhere(value: Selector | NormalizedName): Where {
     }
   }
   return {
-    sql: `EXISTS(SELECT 1 FROM identity_variants v WHERE ${clauses.join(' AND ')})`,
+    sql: `a.unique_id IN (SELECT v.unique_id FROM identity_variants v WHERE ${clauses.join(' AND ')})`,
     bindings,
   };
 }
@@ -328,12 +328,16 @@ function finalPage<T>(
   empty: string,
 ): { entries: T[]; enrichment: ListEnrichment } {
   let selected = entries;
-  // Reserve room for lossless content plus structuredContent, their enrichment, and the envelope.
-  while (
-    selected.length > 1 &&
-    Buffer.byteLength(JSON.stringify({ entries: selected, enrichment })) * 2 + 2048 > pageBudget
-  )
-    selected = selected.slice(0, -1);
+  const responseBytes = () => {
+    const payload = { entries: selected, enrichment };
+    /** Include JSON-escaped pretty content, structured data, labels, links, and pagination. */
+    return (
+      Buffer.byteLength(JSON.stringify(payload)) +
+      Buffer.byteLength(JSON.stringify(JSON.stringify(payload, null, 2))) +
+      4096
+    );
+  };
+  while (selected.length > 1 && responseBytes() > pageBudget) selected = selected.slice(0, -1);
   const returnedCount = selected.length,
     next = page.offset + returnedCount;
   const remaining = returnedCount > 0 && next < total,
@@ -344,9 +348,7 @@ function finalPage<T>(
       : page.offset >= total
         ? 'This page is past the available results; repeat the same tool with offset 0.'
         : '';
-  const oversized =
-    selected.length === 1 &&
-    Buffer.byteLength(JSON.stringify({ entries: selected, enrichment })) * 2 + 2048 > pageBudget;
+  const oversized = selected.length === 1 && responseBytes() > pageBudget;
   return {
     entries: selected,
     enrichment: {
@@ -361,7 +363,7 @@ function finalPage<T>(
         extra,
         atPagingCap ? 'Narrow the filters to reach remaining results within the offset cap.' : '',
         oversized
-          ? 'One complete person exceeds the response byte budget; all source credentials are retained.'
+          ? 'One complete record exceeds the response byte budget; all source credentials are retained.'
           : '',
       ]
         .filter(Boolean)

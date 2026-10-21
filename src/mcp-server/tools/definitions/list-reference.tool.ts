@@ -38,9 +38,9 @@ export const listReferenceTool = tool('faa_airmen_list_reference', {
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'Invalid code, location, or filter combination after normalization.',
+      when: 'Invalid reference topic, filter text, or filter/topic combination after normalization.',
       recovery:
-        'Call faa_airmen_list_reference with topic certificate_types or ratings, then retry with the documented filters.',
+        'Retry faa_airmen_list_reference with a listed topic; use filter only for certificate_types, certificate_levels, ratings, or type_ratings, with at most 80 normalized characters.',
       retryable: false,
       thrownBy: 'service',
     },

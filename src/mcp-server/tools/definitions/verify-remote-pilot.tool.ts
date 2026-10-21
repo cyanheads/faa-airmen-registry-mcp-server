@@ -54,7 +54,7 @@ export const verifyRemotePilotTool = tool('faa_airmen_verify_remote_pilot', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'Invalid code, location, or filter combination after normalization.',
       recovery:
-        'Call faa_airmen_list_reference with topic certificate_types or ratings, then retry with the documented filters.',
+        'Retry faa_airmen_verify_remote_pilot with a two-letter state and nameMatch exact or prefix; omit blank optional filters and use limit 1–50 and offset 0–10000.',
       retryable: false,
       thrownBy: 'service',
     },
@@ -63,7 +63,7 @@ export const verifyRemotePilotTool = tool('faa_airmen_verify_remote_pilot', {
       code: JsonRpcErrorCode.Forbidden,
       when: 'Nonblank city or ZIP filter supplied while location access is disabled.',
       recovery:
-        'Retry faa_airmen_verify_certificate or faa_airmen_search_instructors using name and state only; city and ZIP access is disabled by the operator.',
+        'Retry faa_airmen_verify_remote_pilot using name and state only; city and ZIP access is disabled by the operator.',
       retryable: false,
       thrownBy: 'service',
     },

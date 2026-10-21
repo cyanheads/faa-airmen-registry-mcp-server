@@ -70,7 +70,7 @@ export const searchInstructorsTool = tool('faa_airmen_search_instructors', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'Invalid or blank semantic name filter.',
       recovery:
-        'Call faa_airmen_list_reference with topic identifiers, then retry with a Unique ID or a nonblank name selector.',
+        'Call faa_airmen_list_reference with topic identifiers, then retry faa_airmen_search_instructors with a nonblank firstName or lastName, or omit the invalid name filter and use state or ratingCodes.',
       retryable: false,
       thrownBy: 'service',
     },

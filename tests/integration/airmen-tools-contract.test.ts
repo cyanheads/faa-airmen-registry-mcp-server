@@ -66,6 +66,66 @@ describe('FAA tool production contracts', () => {
       );
     expect(entry).not.toContain('echoTool');
   });
+  it('preserves prototype-named unknown source codes through ZIP, SQLite and both output surfaces', async () => {
+    const files = sourceFiles({
+      pilotBasic: [basicRow(undefined, { 10: 'constructor' })],
+      nonpilotBasic: [basicRow(undefined, { 10: 'constructor' })],
+      pilotCert: [
+        certificateRow(undefined, true, {
+          3: 'constructor',
+          4: 'toString',
+          6: 'P/constructor',
+          7: 'P/__proto__',
+          8: 'P/toString',
+        }),
+        certificateRow(undefined, true, { 3: 'P', 4: 'constructor' }),
+        certificateRow(undefined, true, { 3: '__proto__', 4: 'toString' }),
+      ],
+    });
+    const service = initAirmenRegistryService(
+      { mirrorDir: directory, includeLocation: false, staleAfterDays: 45 },
+      { fetch: sourceFetch(zipSource(files)), clock: () => new Date('2026-10-20T00:00:00Z') },
+    );
+    await service.initialize();
+    const certificates = await runToolContract(tools[0], { mode: 'id', uniqueId: 'A9999999' });
+    parity(certificates);
+    const data = renderedResult(certificates.content) as {
+      matches: {
+        certificates: {
+          type: { code: string; description?: string };
+          level?: { code: string; description?: string };
+          ratings: { code: string; raw: string; description?: string }[];
+        }[];
+      }[];
+    };
+    const records = data.matches[0]!.certificates;
+    expect(records.find((record) => record.type.code === 'constructor')).toMatchObject({
+      type: { code: 'constructor' },
+      level: { code: 'toString' },
+      ratings: [
+        { code: 'constructor', raw: 'P/constructor' },
+        { code: '__proto__', raw: 'P/__proto__' },
+        { code: 'toString', raw: 'P/toString' },
+      ],
+    });
+    for (const record of records) {
+      if (record.type.code !== 'P' && record.type.code !== 'U')
+        expect(record.type).not.toHaveProperty('description');
+      if (record.level?.code === 'constructor' || record.level?.code === 'toString')
+        expect(record.level).not.toHaveProperty('description');
+      for (const rating of record.ratings) expect(rating).not.toHaveProperty('description');
+    }
+    const medical = await runToolContract(tools[2], { uniqueId: 'A9999999' });
+    parity(medical);
+    expect(medical.structuredContent).toMatchObject({
+      found: true,
+      medicalRecords: [{ medicalClass: { code: 'constructor' } }],
+    });
+    const medicalData = renderedResult(medical.content) as {
+      medicalRecords: { medicalClass: { code: string; description?: string } }[];
+    };
+    expect(medicalData.medicalRecords[0]!.medicalClass).not.toHaveProperty('description');
+  });
   it('serves the real registered six-tool catalog and complete calls over stdio JSON-RPC', async () => {
     await init().initialize();
     const child = spawn('bun', ['run', 'src/index.ts'], {
@@ -187,6 +247,15 @@ describe('FAA tool production contracts', () => {
       'mirror_status',
     ] as const)
       parity(await runToolContract(tools[5], { topic }));
+  });
+  it('keeps a maximum reference page within the complete wire response budget', async () => {
+    init();
+    const result = await runToolContract(tools[5], { topic: 'ratings', limit: 50 });
+    parity(result);
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(24 * 1024);
+    const structured = renderedResult(result.content);
+    expect(structured.hasMore).toBe(true);
+    expect(structured.nextOffset).toBe(structured.returnedCount);
   });
   it('puts every reachable declared failure reason and recovery on the contract path', async () => {
     init();

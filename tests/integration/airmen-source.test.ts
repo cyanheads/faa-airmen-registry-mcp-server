@@ -97,4 +97,47 @@ describe('FAA source acquisition', () => {
       ),
     ).rejects.toMatchObject({ stage: 'acquisition' });
   });
+  it('rejects a redirect to a different snapshot month before fetching its bytes', async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith('releasable_airmen_download'))
+        return new Response('<a href="https://registry.faa.gov/CS102026.zip">CSV</a>');
+      if (url.endsWith('CS102026.zip'))
+        return new Response(null, { status: 302, headers: { location: '/CS012025.zip' } });
+      return new Response(new Uint8Array(zipSource()));
+    });
+    await expect(
+      acquireSource(
+        join(directory, 'download.zip'),
+        fetcher as typeof fetch,
+        clock,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ stage: 'acquisition' });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    await expect(readFile(join(directory, 'download.zip'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+  it('records the accepted final same-month download URL', async () => {
+    const finalUrl = 'https://www.faa.gov/download/CS102026.zip';
+    const bytes = zipSource();
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith('releasable_airmen_download'))
+        return new Response('<a href="https://registry.faa.gov/CS102026.zip">CSV</a>');
+      if (url === 'https://registry.faa.gov/CS102026.zip')
+        return new Response(null, { status: 302, headers: { location: finalUrl } });
+      return new Response(new Uint8Array(bytes));
+    });
+    const result = await acquireSource(
+      join(directory, 'download.zip'),
+      fetcher as typeof fetch,
+      clock,
+      new AbortController().signal,
+    );
+    expect(result).toMatchObject({ archiveUrl: finalUrl, snapshotMonth: '2026-10' });
+    expect(await readFile(join(directory, 'download.zip'))).toEqual(bytes);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
 });
