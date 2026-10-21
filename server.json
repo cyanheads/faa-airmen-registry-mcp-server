@@ -6,14 +6,14 @@
     "url": "https://github.com/cyanheads/faa-airmen-registry-mcp-server",
     "source": "github"
   },
-  "version": "0.1.1",
+  "version": "0.2.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/faa-airmen-registry-mcp-server",
       "runtimeHint": "npx",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "environmentVariables": [
         {
           "name": "FAA_AIRMEN_MIRROR_DIR",
@@ -59,7 +59,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/faa-airmen-registry-mcp-server",
       "runtimeHint": "npx",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "environmentVariables": [
         {
           "name": "FAA_AIRMEN_MIRROR_DIR",

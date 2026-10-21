@@ -1,6 +1,6 @@
 # faa-airmen-registry-mcp-server - Directory Structure
 
-Generated on: 2026-10-21 03:49:50
+Generated on: 2026-10-21 11:34:15
 
 ```text
 faa-airmen-registry-mcp-server/
@@ -24,6 +24,8 @@ faa-airmen-registry-mcp-server/
 │   ├── extensions.json
 │   └── settings.json
 ├── changelog/
+│   ├── 0.1.x/
+│   ├── 0.2.x/
 │   └── template.md
 ├── docs/
 │   └── design.md
@@ -134,6 +136,7 @@ faa-airmen-registry-mcp-server/
 │   └── tree.ts
 ├── src/
 │   ├── cli/
+│   │   ├── mirror-command.ts
 │   │   └── mirror.ts
 │   ├── config/
 │   │   └── server-config.ts
@@ -175,7 +178,8 @@ faa-airmen-registry-mcp-server/
 │   │   ├── airmen-mirror.test.ts
 │   │   ├── airmen-registry-service.test.ts
 │   │   ├── airmen-source.test.ts
-│   │   └── airmen-tools-contract.test.ts
+│   │   ├── airmen-tools-contract.test.ts
+│   │   └── mirror-cli.test.ts
 │   ├── prompts/
 │   ├── resources/
 │   ├── smoke/
@@ -190,6 +194,7 @@ faa-airmen-registry-mcp-server/
 ├── biome.json
 ├── bun.lock
 ├── bunfig.toml
+├── CHANGELOG.md
 ├── CLAUDE.md
 ├── devcheck.config.json
 ├── Dockerfile
