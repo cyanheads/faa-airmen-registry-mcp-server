@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "description": "Search FAA airmen certificates, ratings, and informational medical records via MCP. STDIO or Streamable HTTP.",
   "author": {
-    "name": "Casey Hand",
+    "name": "cyanheads",
     "email": "casey@caseyjhand.com",
-    "url": "https://caseyjhand.com"
+    "url": "https://github.com/cyanheads"
   },
   "homepage": "https://github.com/cyanheads/faa-airmen-registry-mcp-server#readme",
   "repository": "https://github.com/cyanheads/faa-airmen-registry-mcp-server",
@@ -15,7 +15,7 @@
   "interface": {
     "displayName": "faa-airmen-registry-mcp-server",
     "shortDescription": "Search FAA airmen certificates, ratings, and informational medical records via MCP. STDIO or Streamable HTTP.",
-    "longDescription": "Search FAA airmen certificates, ratings, and informational medical records via MCP. STDIO or Streamable HTTP.",
+    "longDescription": "Search a local FAA releasable snapshot for airmen certificates, complete ratings, instructor records, remote pilot records, and informational medical fields. Six read-only tools preserve source provenance and distinguish identity candidates without asserting current privileges or fitness. Initialize and refresh the mirror separately with the operator CLI; no API key is required. Street addresses are discarded, and city and ZIP access requires explicit operator opt-in.",
     "developerName": "cyanheads",
     "category": "data",
     "capabilities": ["Read"],

@@ -157,7 +157,9 @@ Medical guidance explains the class/age/operation distinctions from the FAA AME 
 
 Use `errors` contracts with actual `JsonRpcErrorCode` members; service-raised reasons are marked `thrownBy:'service'`. Handlers throw `ctx.fail` or service errors; no handler try/catch. Framework schema-invalid inputs retain framework `invalid_arguments`; semantic normalization failures use the contracts below. Do not attach raw SQL, personal input values, CSV records, or filesystem paths to errors.
 
-| Reason | Code | When | Verbatim recovery |
+The following table gives the shared recovery pattern. Each tool declares its own recovery text inline: ID-only ratings/medical calls direct invalid identity recovery to name discovery and then back to that tool; instructor identity recovery names its optional filters; reference filter recovery lists the reference topics and filter limit. The tool definitions are the source of truth for exact text.
+
+| Reason | Code | When | Default recovery pattern |
 |:-------|:-----|:-----|:------------------|
 | `invalid_identity` | `ValidationError` | Invalid/blank semantic ID/name selector | `Call faa_airmen_list_reference with topic identifiers, then retry with a Unique ID or a nonblank name selector.` |
 | `invalid_filter` | `ValidationError` | Invalid code/location/filter combination after normalization | `Call faa_airmen_list_reference with topic certificate_types or ratings, then retry with the documented filters.` |

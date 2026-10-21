@@ -1,6 +1,6 @@
 # faa-airmen-registry-mcp-server - Directory Structure
 
-Generated on: 2026-10-21 03:36:54
+Generated on: 2026-10-21 03:49:50
 
 ```text
 faa-airmen-registry-mcp-server/
@@ -196,6 +196,7 @@ faa-airmen-registry-mcp-server/
 ├── LICENSE
 ├── manifest.json
 ├── package.json
+├── README.md
 ├── server.json
 ├── tsconfig.build.json
 ├── tsconfig.json
