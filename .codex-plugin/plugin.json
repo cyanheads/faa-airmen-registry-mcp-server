@@ -1,0 +1,25 @@
+{
+  "name": "faa-airmen-registry-mcp-server",
+  "version": "0.1.0",
+  "description": "Search FAA airmen certificates, ratings, and informational medical records via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "Casey Hand",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
+  "homepage": "https://github.com/cyanheads/faa-airmen-registry-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/faa-airmen-registry-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "typescript", "bun", "stdio", "streamable-http", "ai-agent", "faa", "airmen", "aviation", "pilot-certificates", "type-ratings", "local-mirror"],
+  "mcpServers": "./.codex-plugin/mcp.json",
+  "interface": {
+    "displayName": "faa-airmen-registry-mcp-server",
+    "shortDescription": "Search FAA airmen certificates, ratings, and informational medical records via MCP. STDIO or Streamable HTTP.",
+    "longDescription": "Search FAA airmen certificates, ratings, and informational medical records via MCP. STDIO or Streamable HTTP.",
+    "developerName": "cyanheads",
+    "category": "data",
+    "capabilities": ["Read"],
+    "websiteURL": "https://github.com/cyanheads/faa-airmen-registry-mcp-server",
+    "defaultPrompt": []
+  }
+}
