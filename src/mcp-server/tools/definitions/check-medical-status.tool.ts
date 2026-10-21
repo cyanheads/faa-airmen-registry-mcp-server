@@ -8,10 +8,10 @@ import { getAirmenRegistryService } from '@/services/airmen/airmen-registry-serv
 import { formatResult, singleTrailer } from '../render.js';
 import { airmanSchema, idInput, medicalRecordSchema, singleEnrichment } from '../schemas.js';
 
-/** Read the FAA snapshot's informational medical class, medical dates, and BasicMed dates for one airman Unique ID. These fields are not authoritative medical certification or fitness determinations. Get the ID from faa_airmen_verify_certificate. */
+/** Read the FAA snapshot's informational medical class, medical dates, and BasicMed dates for one airman Unique ID. These fields are not authoritative medical certification or fitness determinations. Get the ID from faa_airmen_verify_certificate. Every call is rejected while the operator's personal-data redaction is on (the default). */
 export const checkMedicalStatusTool = tool('faa_airmen_check_medical_status', {
   description:
-    "Read the FAA snapshot's informational medical class, medical dates, and BasicMed dates for one airman Unique ID. These fields are not authoritative medical certification or fitness determinations. Get the ID from faa_airmen_verify_certificate.",
+    "Read the FAA snapshot's informational medical class, medical dates, and BasicMed dates for one airman Unique ID. These fields are not authoritative medical certification or fitness determinations. Get the ID from faa_airmen_verify_certificate. Every call is rejected while the operator's personal-data redaction is on (the default).",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: idInput,
   output: z.object({
@@ -34,6 +34,16 @@ export const checkMedicalStatusTool = tool('faa_airmen_check_medical_status', {
   enrichment: singleEnrichment,
   enrichmentTrailer: singleTrailer,
   errors: [
+    {
+      reason: 'pii_redacted',
+      code: JsonRpcErrorCode.Forbidden,
+      when: 'Personal-data redaction is on; every medical call that passes the input schema is rejected before the ID is checked or the mirror is read.',
+      recovery:
+        'Use faa_airmen_verify_certificate or faa_airmen_get_type_ratings for certificate records; for a personal install, the operator can set FAA_AIRMEN_REDACT_PII=false to read informational medical fields.',
+      retryable: false,
+      severity: 'notice',
+      thrownBy: 'service',
+    },
     {
       reason: 'invalid_identity',
       code: JsonRpcErrorCode.ValidationError,

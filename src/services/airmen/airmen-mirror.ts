@@ -9,21 +9,30 @@ import {
   lstat,
   mkdir,
   open,
+  readdir,
   readFile,
   realpath,
   rename,
   rm,
-  statfs,
 } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import type BetterSqlite3 from 'better-sqlite3';
 import type { ServerConfig } from '../../config/server-config.js';
-import { importArchive, inspectDatabase, REFERENCE_VERSION, SCHEMA_VERSION } from './importer.js';
-import { MirrorError, safeMirrorError } from './mirror-error.js';
+import {
+  importArchive,
+  inspectDatabase,
+  REFERENCE_VERSION,
+  reserve,
+  SCHEMA_VERSION,
+} from './importer.js';
+import { errorCode, MirrorError, type MirrorStage, safeMirrorError } from './mirror-error.js';
 import { acquireSource } from './source.js';
 import type {
+  GenerationSummary,
   MirrorStatus,
+  OperatorStatus,
   Provenance,
+  PruneResult,
   RefreshState,
   SnapshotDatabase,
   SnapshotLease,
@@ -41,12 +50,36 @@ interface Current {
   generation: string;
   sha256: string;
 }
+interface GenerationEntry {
+  name: string;
+  real: boolean;
+}
+
+/** The only directory name a writer stages or publishes. */
+const GENERATION = /^generation-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const EMPTY_SUMMARY: GenerationSummary = { count: 0, bytes: 0, unmeasured: 0 };
+
+/** Apparent bytes below a directory, read with lstat so links are counted, never followed. */
+async function treeBytes(path: string): Promise<number> {
+  let bytes = 0;
+  for (const entry of await readdir(path, { withFileTypes: true })) {
+    const child = join(path, entry.name);
+    bytes += entry.isDirectory() ? await treeBytes(child) : (await lstat(child)).size;
+  }
+  return bytes;
+}
 
 async function readJson(path: string): Promise<unknown> {
   return JSON.parse(await readFile(path, 'utf8'));
 }
 function isMissing(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+  return errorCode(error) === 'ENOENT';
+}
+function notInitialized(): MirrorError {
+  return new MirrorError(
+    'missing',
+    'Local mirror is not initialized; run faa-airmen-registry-mirror init.',
+  );
 }
 
 async function openReadonly(path: string): Promise<ReadonlyConnection> {
@@ -72,14 +105,17 @@ async function openReadonly(path: string): Promise<ReadonlyConnection> {
   };
 }
 
-async function syncDirectory(path: string): Promise<void> {
-  if (process.platform === 'win32') return;
-  const directory = await open(path, 'r');
+async function fsync(path: string): Promise<void> {
+  const handle = await open(path, 'r');
   try {
-    await directory.sync();
+    await handle.sync();
   } finally {
-    await directory.close();
+    await handle.close();
   }
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  if (process.platform !== 'win32') await fsync(path);
 }
 
 async function atomicJson(directory: string, name: string, value: unknown): Promise<void> {
@@ -129,6 +165,54 @@ function validateMetadata(value: unknown, current: Current): SnapshotMetadata {
   return metadata;
 }
 
+/** Overall deadline of one init or refresh; an older in-progress record cannot belong to a live writer. */
+export const REFRESH_DEADLINE_MS = 2_400_000;
+/** Deadline of the archive import inside one init or refresh. */
+export const IMPORT_DEADLINE_MS = 1_800_000;
+
+/** The overall-deadline failure, whether its timer fired or the wall clock passed it. */
+function overallTimeout(mode: 'init' | 'refresh'): MirrorError {
+  return new MirrorError(
+    'timeout',
+    `Mirror ${mode} exceeded its ${REFRESH_DEADLINE_MS / 60_000}-minute deadline; no new snapshot was published.`,
+  );
+}
+
+/**
+ * Classify a failed init or refresh. Once CURRENT names the new generation readers serve it, so a
+ * later failure (the directory sync, the refresh record) is a storage fault after publication,
+ * whatever signal fired meanwhile. Before that, which signal fired decides cancellation versus
+ * timeout: abort errors carry the same name for both, and the importer may have wrapped them.
+ */
+function writeFailure(
+  error: unknown,
+  mode: 'init' | 'refresh',
+  run: {
+    published: boolean;
+    externalSignal: AbortSignal | undefined;
+    deadline: AbortSignal;
+    importDeadline: AbortSignal | undefined;
+  },
+): MirrorError {
+  if (run.published)
+    return new MirrorError(
+      'disk',
+      `Mirror ${mode} published a new snapshot, which readers now serve, but a storage step after publishing failed; check free space and directory permissions.`,
+    );
+  if (run.externalSignal?.aborted)
+    return new MirrorError(
+      'cancelled',
+      `Mirror ${mode} was cancelled before it finished; no new snapshot was published.`,
+    );
+  if (run.deadline.aborted) return overallTimeout(mode);
+  if (run.importDeadline?.aborted)
+    return new MirrorError(
+      'timeout',
+      `FAA archive import exceeded its ${IMPORT_DEADLINE_MS / 60_000}-minute deadline; no new snapshot was published.`,
+    );
+  return safeMirrorError(error, 'disk');
+}
+
 /** Lifecycle dependencies are limited to acquisition and source-age clocks. */
 export interface MirrorDependencies {
   clock?: () => Date;
@@ -163,33 +247,34 @@ export class AirmenMirror {
     };
   }
 
+  /** Read the CURRENT manifest; missing is `missing`, a malformed manifest `unavailable`. */
+  private async readCurrent(): Promise<Current> {
+    let raw: unknown;
+    try {
+      raw = await readJson(join(this.config.mirrorDir, 'CURRENT'));
+    } catch (error) {
+      if (isMissing(error)) throw notInitialized();
+      throw error;
+    }
+    if (
+      typeof raw !== 'object' ||
+      raw === null ||
+      !('generation' in raw) ||
+      !('sha256' in raw) ||
+      typeof raw.generation !== 'string' ||
+      !/^generation-[a-f0-9-]{36}$/.test(raw.generation) ||
+      typeof raw.sha256 !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(raw.sha256)
+    )
+      throw new MirrorError('unavailable', 'Published mirror manifest is invalid.');
+    return { generation: raw.generation, sha256: raw.sha256 };
+  }
+
   /** Open exactly CURRENT, never creating a database or falling back to an older generation. */
   async acquire(): Promise<SnapshotLease> {
     let connection: ReadonlyConnection | undefined;
     try {
-      let raw: unknown;
-      try {
-        raw = await readJson(join(this.config.mirrorDir, 'CURRENT'));
-      } catch (error) {
-        if (isMissing(error))
-          throw new MirrorError(
-            'missing',
-            'Local mirror is not initialized; run faa-airmen-registry-mirror init.',
-          );
-        throw error;
-      }
-      if (
-        typeof raw !== 'object' ||
-        raw === null ||
-        !('generation' in raw) ||
-        !('sha256' in raw) ||
-        typeof raw.generation !== 'string' ||
-        !/^generation-[a-f0-9-]{36}$/.test(raw.generation) ||
-        typeof raw.sha256 !== 'string' ||
-        !/^[a-f0-9]{64}$/.test(raw.sha256)
-      )
-        throw new MirrorError('unavailable', 'Published mirror manifest is invalid.');
-      const current: Current = { generation: raw.generation, sha256: raw.sha256 };
+      const current = await this.readCurrent();
       const root = await realpath(this.config.mirrorDir);
       const generationPath = join(root, current.generation);
       const path = join(generationPath, 'mirror.sqlite');
@@ -234,20 +319,40 @@ export class AirmenMirror {
     }
   }
 
+  /**
+   * Read the last recorded refresh state; null when no refresh has run. A record still in
+   * progress past the refresh deadline belongs to a writer that ended without recording a
+   * result, on any host, so it reads as interrupted. Reading never changes the record or lock.
+   */
+  async refreshState(): Promise<RefreshState | null> {
+    let state: RefreshState;
+    try {
+      state = (await readJson(join(this.config.mirrorDir, 'REFRESH.json'))) as RefreshState;
+    } catch (error) {
+      if (isMissing(error)) return null;
+      throw error;
+    }
+    if (
+      state.status === 'in_progress' &&
+      this.clock().getTime() - Date.parse(state.startedAt) > REFRESH_DEADLINE_MS
+    )
+      return { status: 'failed', stage: 'interrupted', startedAt: state.startedAt };
+    return state;
+  }
+
   /** Read readiness, policy and last refresh state without creating any paths. */
   async status(): Promise<MirrorStatus> {
-    let refresh: RefreshState | null = null;
+    let refresh: RefreshState | null;
     try {
-      refresh = (await readJson(join(this.config.mirrorDir, 'REFRESH.json'))) as RefreshState;
-    } catch (error) {
-      if (!isMissing(error))
-        return {
-          ready: false,
-          status: 'unavailable',
-          provenance: null,
-          importPolicy: null,
-          refresh: null,
-        };
+      refresh = await this.refreshState();
+    } catch {
+      return {
+        ready: false,
+        status: 'unavailable',
+        provenance: null,
+        importPolicy: null,
+        refresh: null,
+      };
     }
     try {
       using lease = await this.acquire();
@@ -283,6 +388,146 @@ export class AirmenMirror {
     }
   }
 
+  /** CLI status: readiness plus a best-effort size of every generation besides CURRENT's. */
+  async operatorStatus(): Promise<OperatorStatus> {
+    const status = await this.status();
+    // An unready snapshot has no provenance, yet CURRENT still names a generation to leave out.
+    const kept =
+      status.provenance?.generationId ??
+      (await this.readCurrent().then(
+        ({ generation }) => generation,
+        () => undefined,
+      ));
+    let entries: GenerationEntry[];
+    try {
+      entries = await this.generationEntries();
+    } catch (error) {
+      return { ...status, supersededGenerations: isMissing(error) ? { ...EMPTY_SUMMARY } : null };
+    }
+    const summary = { ...EMPTY_SUMMARY };
+    for (const entry of entries) {
+      if (!entry.real || entry.name === kept) continue;
+      summary.count++;
+      try {
+        summary.bytes += await treeBytes(join(this.config.mirrorDir, entry.name));
+      } catch {
+        summary.unmeasured++;
+      }
+    }
+    return { ...status, supersededGenerations: summary };
+  }
+
+  /**
+   * Delete every generation CURRENT does not name. Holds WRITER.lock for the whole run so no
+   * refresh can stage or publish meanwhile. Readers lease generations per process, so every
+   * server process using this mirror must be stopped first.
+   */
+  async prune(): Promise<PruneResult> {
+    let release: () => Promise<void>;
+    try {
+      release = await this.takeLock('prune', this.clock().toISOString());
+    } catch (error) {
+      if (isMissing(error)) throw notInitialized();
+      throw safeMirrorError(error, 'disk');
+    }
+    try {
+      const current = await this.status();
+      if (!current.provenance) {
+        // Status is unavailable whenever the refresh record is unreadable, and verify never reads it.
+        const recordReadable = await this.refreshState().then(
+          () => true,
+          () => false,
+        );
+        throw new MirrorError(
+          current.status === 'missing' ? 'missing' : 'unavailable',
+          recordReadable
+            ? 'Prune requires a ready published mirror; nothing was deleted. Check it with faa-airmen-registry-mirror verify.'
+            : 'REFRESH.json is unreadable, so prune cannot confirm the published mirror is ready; nothing was deleted. Remove REFRESH.json, which records only the last refresh outcome, and run prune again.',
+        );
+      }
+      const kept = current.provenance.generationId;
+      const result: PruneResult = {
+        ok: true,
+        kept,
+        removed: [],
+        bytesFreed: 0,
+        skipped: [],
+        failed: [],
+      };
+      for (const entry of await this.generationEntries()) {
+        if (entry.name === kept) continue;
+        if (!entry.real) {
+          result.skipped.push(entry.name);
+          continue;
+        }
+        const path = join(this.config.mirrorDir, entry.name);
+        try {
+          const bytes = await treeBytes(path);
+          await rm(path, { recursive: true });
+          result.removed.push({ generation: entry.name, bytes });
+          result.bytesFreed += bytes;
+        } catch {
+          result.failed.push(entry.name);
+        }
+      }
+      result.ok = result.failed.length === 0;
+      return result;
+    } finally {
+      await release();
+    }
+  }
+
+  /** Every top-level `generation-*` entry; only an lstat directory with a UUID name is real. */
+  private async generationEntries(): Promise<GenerationEntry[]> {
+    return (await readdir(this.config.mirrorDir, { withFileTypes: true }))
+      .filter((entry) => entry.name.startsWith('generation-'))
+      .map((entry) => ({
+        name: entry.name,
+        real: entry.isDirectory() && GENERATION.test(entry.name),
+      }));
+  }
+
+  /** Take WRITER.lock exclusively; the returned function releases it. Never steals a lock. */
+  private async takeLock(runId: string, startedAt: string): Promise<() => Promise<void>> {
+    const path = join(this.config.mirrorDir, 'WRITER.lock');
+    let lock: FileHandle;
+    try {
+      lock = await open(path, 'wx', 0o600);
+    } catch (error) {
+      if (errorCode(error) === 'EEXIST')
+        throw new MirrorError(
+          'lock',
+          'Another mirror writer owns WRITER.lock. Confirm its PID has exited before removing a stale lock.',
+        );
+      throw error;
+    }
+    /**
+     * Remove WRITER.lock only while it is still this run's file: its device and inode match the
+     * open handle, which pins that inode until close. A lock removed or replaced meanwhile, or one
+     * whose identity cannot be read, is left alone and never fails a finished run. Only a
+     * replacement landing between the check and the removal escapes the check.
+     */
+    const release = async () => {
+      const ours = await Promise.all([
+        lock.stat({ bigint: true }),
+        lstat(path, { bigint: true }),
+      ]).then(
+        ([held, named]) => held.dev === named.dev && held.ino === named.ino,
+        () => false,
+      );
+      await lock.close();
+      if (ours) await rm(path, { force: true });
+    };
+    try {
+      await lock.writeFile(JSON.stringify({ pid: process.pid, runId, startedAt }));
+      await lock.sync();
+    } catch (error) {
+      await release();
+      throw error;
+    }
+    return release;
+  }
+
   /** Init is idempotent once a compatible generation exists. */
   initialize(signal?: AbortSignal): Promise<MirrorStatus> {
     return this.write('init', signal);
@@ -296,65 +541,48 @@ export class AirmenMirror {
     mode: 'init' | 'refresh',
     externalSignal?: AbortSignal,
   ): Promise<MirrorStatus> {
-    const signal = AbortSignal.any([
-      externalSignal ?? new AbortController().signal,
-      AbortSignal.timeout(2_400_000),
-    ]);
+    const deadline = AbortSignal.timeout(REFRESH_DEADLINE_MS);
+    const signal = externalSignal ? AbortSignal.any([externalSignal, deadline]) : deadline;
+    let importDeadline: AbortSignal | undefined;
     await mkdir(this.config.mirrorDir, { recursive: true, mode: 0o700 });
-    const lockPath = join(this.config.mirrorDir, 'WRITER.lock');
-    let lock: FileHandle;
-    try {
-      lock = await open(lockPath, 'wx', 0o600);
-    } catch (error) {
-      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST')
-        throw new MirrorError(
-          'lock',
-          'Another mirror writer owns WRITER.lock. Confirm its PID has exited before removing a stale lock.',
-        );
-      throw safeMirrorError(error, 'disk');
-    }
     const generationId = `generation-${randomUUID()}`;
     const staging = join(this.config.mirrorDir, generationId);
     const archive = join(staging, 'download.zip');
     const startedAt = this.clock().toISOString();
+    const release = await this.takeLock(generationId, startedAt).catch((error: unknown) => {
+      throw safeMirrorError(error, 'disk');
+    });
+    const finishRefresh = (status: 'complete' | 'failed', stage?: MirrorStage) =>
+      atomicJson(this.config.mirrorDir, 'REFRESH.json', {
+        status,
+        startedAt,
+        finishedAt: this.clock().toISOString(),
+        ...(stage && { stage }),
+      } satisfies RefreshState);
     let published = false;
     try {
       await chmod(this.config.mirrorDir, 0o700);
-      await lock.writeFile(JSON.stringify({ pid: process.pid, runId: generationId, startedAt }));
-      await lock.sync();
       const current = await this.status();
-      if (
-        mode === 'init' &&
-        current.ready &&
-        current.importPolicy?.includeLocation === this.config.includeLocation
-      )
-        return current;
+      const samePolicy = current.importPolicy?.includeLocation === this.config.includeLocation;
+      if (mode === 'init' && current.ready && samePolicy) return current;
       await atomicJson(this.config.mirrorDir, 'REFRESH.json', {
         status: 'in_progress',
         startedAt,
       } satisfies RefreshState);
-      const space = await statfs(this.config.mirrorDir);
-      if (space.bavail * space.bsize < 1024 ** 3)
-        throw new MirrorError(
-          'disk',
-          'Mirror import requires at least 1 GiB free storage reserve.',
-        );
+      await reserve(this.config.mirrorDir);
       await mkdir(staging, { mode: 0o700 });
       const source = await acquireSource(archive, this.fetcher, this.clock, signal);
       if (
         mode === 'refresh' &&
         current.ready &&
         current.provenance?.sha256 === source.sha256 &&
-        current.importPolicy?.includeLocation === this.config.includeLocation
+        samePolicy
       ) {
-        await atomicJson(this.config.mirrorDir, 'REFRESH.json', {
-          status: 'complete',
-          startedAt,
-          finishedAt: this.clock().toISOString(),
-        } satisfies RefreshState);
+        await finishRefresh('complete');
         return this.status();
       }
-      const importSignal = AbortSignal.any([signal, AbortSignal.timeout(1_800_000)]);
+      importDeadline = AbortSignal.timeout(IMPORT_DEADLINE_MS);
+      const importSignal = AbortSignal.any([signal, importDeadline]);
       const database = join(staging, 'mirror.sqlite');
       await importArchive(
         archive,
@@ -365,49 +593,51 @@ export class AirmenMirror {
         this.clock,
         importSignal,
       );
+      // The import finished, so its deadline no longer explains a later failure.
+      importDeadline = undefined;
       await rm(archive);
       for (const suffix of ['-wal', '-shm', '-journal']) {
-        try {
-          await lstat(`${database}${suffix}`);
+        const sidecar = await lstat(`${database}${suffix}`).catch((error: unknown) => {
+          if (isMissing(error)) return null;
+          throw error;
+        });
+        if (sidecar)
           throw new MirrorError('integrity', 'Staging database still requires a SQLite sidecar.');
-        } catch (error) {
-          if (!isMissing(error)) throw error;
-        }
       }
       await chmod(database, 0o600);
-      const file = await open(database, 'r');
-      try {
-        await file.sync();
-      } finally {
-        await file.close();
-      }
+      await fsync(database);
       await syncDirectory(staging);
       signal.throwIfAborted();
+      /**
+       * The deadline timer stops while the host sleeps, but status reads the wall clock: once
+       * status may have reported this run interrupted, it must not publish.
+       */
+      if (this.clock().getTime() - Date.parse(startedAt) > REFRESH_DEADLINE_MS)
+        throw overallTimeout(mode);
       await atomicJson(this.config.mirrorDir, 'CURRENT', {
         generation: generationId,
         sha256: source.sha256,
       } satisfies Current);
       published = true;
       await syncDirectory(this.config.mirrorDir);
-      await atomicJson(this.config.mirrorDir, 'REFRESH.json', {
-        status: 'complete',
-        startedAt,
-        finishedAt: this.clock().toISOString(),
-      } satisfies RefreshState);
+      await finishRefresh('complete');
       return this.status();
     } catch (error) {
-      const safe = safeMirrorError(error, 'disk');
-      await atomicJson(this.config.mirrorDir, 'REFRESH.json', {
-        status: 'failed',
-        startedAt,
-        finishedAt: this.clock().toISOString(),
-        stage: safe.stage,
-      } satisfies RefreshState).catch(() => {});
+      const safe = writeFailure(error, mode, {
+        published,
+        externalSignal,
+        deadline,
+        importDeadline,
+      });
+      await finishRefresh('failed', safe.stage).catch(() => {});
       throw safe;
     } finally {
-      await lock.close();
-      await rm(lockPath);
-      if (!published) await rm(staging, { recursive: true, force: true });
+      /**
+       * Staging goes before the lock, so the next lock holder never meets this run's leftovers. A
+       * removal that fails leaves a superseded generation for prune and never changes the outcome.
+       */
+      if (!published) await rm(staging, { recursive: true, force: true }).catch(() => {});
+      await release();
     }
   }
 }

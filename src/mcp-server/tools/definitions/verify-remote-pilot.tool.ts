@@ -15,10 +15,10 @@ import {
   pagingInput,
 } from '../schemas.js';
 
-/** Find releasable FAA remote pilot certificate records by Unique ID or name. Results establish certificate presence in the local snapshot; they do not establish recurrent-training currency, commercial operating authority, or current Part 107 eligibility. */
+/** Find releasable FAA remote pilot certificate records by Unique ID or name. While the operator's personal-data redaction is on (the default), name mode needs lastName and firstName, nameMatch prefix and city or ZIP filters are rejected, and city and ZIP are withheld. Results establish certificate presence in the local snapshot; they do not establish recurrent-training currency, commercial operating authority, or current Part 107 eligibility. */
 export const verifyRemotePilotTool = tool('faa_airmen_verify_remote_pilot', {
   description:
-    'Find releasable FAA remote pilot certificate records by Unique ID or name. Results establish certificate presence in the local snapshot; they do not establish recurrent-training currency, commercial operating authority, or current Part 107 eligibility.',
+    "Find releasable FAA remote pilot certificate records by Unique ID or name. While the operator's personal-data redaction is on (the default), name mode needs lastName and firstName, nameMatch prefix and city or ZIP filters are rejected, and city and ZIP are withheld. Results establish certificate presence in the local snapshot; they do not establish recurrent-training currency, commercial operating authority, or current Part 107 eligibility.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({ ...identityInput, ...pagingInput }).strict(),
   output: z.object({
@@ -45,7 +45,7 @@ export const verifyRemotePilotTool = tool('faa_airmen_verify_remote_pilot', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'Invalid or blank semantic identity selector.',
       recovery:
-        'Call faa_airmen_list_reference with topic identifiers, then retry with a Unique ID or a nonblank name selector.',
+        'Call faa_airmen_list_reference with topic identifiers, then retry with a Unique ID or a nonblank lastName, plus firstName while personal-data redaction is on.',
       retryable: false,
       thrownBy: 'service',
     },
@@ -54,7 +54,7 @@ export const verifyRemotePilotTool = tool('faa_airmen_verify_remote_pilot', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'Invalid code, location, or filter combination after normalization.',
       recovery:
-        'Retry faa_airmen_verify_remote_pilot with a two-letter state and nameMatch exact or prefix; omit blank optional filters and use limit 1–50 and offset 0–10000.',
+        'Retry faa_airmen_verify_remote_pilot with a two-letter state and nameMatch words or exact (prefix only while personal-data redaction is off); omit blank optional filters, and use a limit of at least 1 and an offset of 0–10000.',
       retryable: false,
       thrownBy: 'service',
     },
@@ -65,6 +65,17 @@ export const verifyRemotePilotTool = tool('faa_airmen_verify_remote_pilot', {
       recovery:
         'Retry faa_airmen_verify_remote_pilot using name and state only; city and ZIP access is disabled by the operator.',
       retryable: false,
+      severity: 'notice',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'pii_redacted',
+      code: JsonRpcErrorCode.Forbidden,
+      when: 'Personal-data redaction is on and the call sends city or ZIP, a name search without both names, or nameMatch prefix.',
+      recovery:
+        'Retry faa_airmen_verify_remote_pilot with both lastName and firstName, nameMatch words or exact, and no city or zipCode, or with mode id and a uniqueId; for a personal install, the operator can set FAA_AIRMEN_REDACT_PII=false.',
+      retryable: false,
+      severity: 'notice',
       thrownBy: 'service',
     },
     {

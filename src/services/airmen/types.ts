@@ -3,6 +3,7 @@
  * @module services/airmen/types
  */
 import type { SqlValue } from '@cyanheads/mcp-ts-core/mirror';
+import type { MirrorStage } from './mirror-error.js';
 
 /** FAA source family, independent of certificate type. */
 export type SourceFamily = 'pilot' | 'nonpilot';
@@ -56,7 +57,7 @@ export interface SnapshotLease extends Disposable {
 /** Safe lifecycle state stored separately from published generations. */
 export interface RefreshState {
   finishedAt?: string;
-  stage?: string;
+  stage?: MirrorStage;
   startedAt: string;
   status: 'in_progress' | 'complete' | 'failed';
 }
@@ -68,6 +69,33 @@ export interface MirrorStatus {
   ready: boolean;
   refresh: RefreshState | null;
   status: 'missing' | 'ready' | 'unavailable';
+}
+
+/** Generations other than the published one, for operator housekeeping; never on `mirror_status`. */
+export interface GenerationSummary {
+  /** Apparent bytes of their files; sizes never descend through links. */
+  bytes: number;
+  count: number;
+  /** Generations whose size could not be read; `bytes` excludes them. */
+  unmeasured: number;
+}
+
+/** CLI `status`: readiness plus the superseded generations prune would remove. */
+export interface OperatorStatus extends MirrorStatus {
+  /** Null when the mirror directory exists but cannot be listed. */
+  supersededGenerations: GenerationSummary | null;
+}
+
+/** Outcome of pruning; names are generation basenames, never paths. */
+export interface PruneResult {
+  bytesFreed: number;
+  /** Generations whose deletion failed; they are not counted as freed. */
+  failed: string[];
+  kept: string;
+  ok: boolean;
+  removed: { bytes: number; generation: string }[];
+  /** Entries named `generation-*` that are not real `generation-<uuid>` directories; never followed. */
+  skipped: string[];
 }
 
 /** Integrity verification never repairs or modifies a generation. */

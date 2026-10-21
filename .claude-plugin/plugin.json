@@ -19,6 +19,7 @@
       "env": {
         "FAA_AIRMEN_MIRROR_DIR": "${user_config.mirror_dir}",
         "FAA_AIRMEN_INCLUDE_LOCATION": "${user_config.include_location}",
+        "FAA_AIRMEN_REDACT_PII": "${user_config.redact_pii}",
         "FAA_AIRMEN_STALE_AFTER_DAYS": "${user_config.stale_after_days}",
         "MCP_TRANSPORT_TYPE": "stdio"
       }
@@ -26,7 +27,8 @@
   },
   "userConfig": {
     "mirror_dir": { "type": "string", "title": "Mirror directory", "description": "Persistent local mirror directory; use the same directory for the lifecycle CLI.", "default": "" },
-    "include_location": { "type": "boolean", "title": "Include city and ZIP", "description": "Opt in to importing, displaying and filtering city and ZIP fields.", "default": false },
+    "include_location": { "type": "boolean", "title": "Include city and ZIP", "description": "Opt in to importing city and ZIP fields; displaying and filtering them also needs personal-data redaction off.", "default": false },
+    "redact_pii": { "type": "boolean", "title": "Redact personal data", "description": "Serving-time personal-data redaction: name searches need first and last name, city and ZIP are hidden, and medical lookups are refused. Turn off only for a personal local install.", "default": true },
     "stale_after_days": { "type": "number", "title": "Source-age warning days", "description": "Source-age warning threshold, integer 1–366; never a credential validity assessment.", "default": 45 }
   }
 }

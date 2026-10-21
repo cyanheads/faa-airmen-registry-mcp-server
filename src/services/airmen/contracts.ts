@@ -2,6 +2,7 @@
  * @fileoverview Public domain contracts for offline FAA registry queries.
  * @module services/airmen/contracts
  */
+import type { MirrorStage } from './mirror-error.js';
 import type { Provenance, SourceFamily } from './types.js';
 
 /** A documented code, or an unrecognized source code retained verbatim. */
@@ -56,12 +57,16 @@ export interface MedicalRecord {
   medicalExpireDateRaw?: string;
   sourceFamilies: SourceFamily[];
 }
+/** Name comparison modes; `words`, the first, is the default for name searches. */
+export const NAME_MATCHES = ['words', 'exact', 'prefix'] as const;
+/** Whole leading words, the whole field, or the field's beginning. */
+export type NameMatch = (typeof NAME_MATCHES)[number];
 /** Shared name/location inputs before semantic normalization. */
 export interface NameInput {
   city?: string;
   firstName?: string;
   lastName?: string;
-  nameMatch?: 'exact' | 'prefix';
+  nameMatch?: NameMatch;
   state?: string;
   zipCode?: string;
 }
@@ -75,9 +80,12 @@ export interface Paging {
   limit?: number;
   offset?: number;
 }
-/** General certificate lookup arguments. */
+/** General certificate lookup arguments; every credential filter must hold on one certificate. */
 export interface VerifyInput extends IdentityInput, Paging {
+  certificateLevel?: string;
   certificateType?: string;
+  ratingCodes?: string[];
+  typeRatings?: string[];
 }
 /** Instructor search requires a name, location, or rating constraint. */
 export interface InstructorInput extends NameInput, Paging {
@@ -85,14 +93,17 @@ export interface InstructorInput extends NameInput, Paging {
   ratingCodes?: string[];
 }
 /** Reference vocabularies and operational guidance topics. */
-export type ReferenceTopic =
-  | 'certificate_types'
-  | 'certificate_levels'
-  | 'ratings'
-  | 'type_ratings'
-  | 'identifiers'
-  | 'medical_guidance'
-  | 'mirror_status';
+export const REFERENCE_TOPICS = [
+  'certificate_types',
+  'certificate_levels',
+  'ratings',
+  'type_ratings',
+  'identifiers',
+  'medical_guidance',
+  'mirror_status',
+] as const;
+/** One reference vocabulary or operational guidance topic. */
+export type ReferenceTopic = (typeof REFERENCE_TOPICS)[number];
 /** Reference lookup arguments. */
 export interface ReferenceInput extends Paging {
   filter?: string;
@@ -107,18 +118,32 @@ export interface ReferenceEntry extends Code {
 }
 /** Caller-visible diagnostic state without filesystem paths. */
 export interface ReferenceMirrorStatus {
-  lastRefreshFailure?: string;
+  lastRefreshFailure?: MirrorStage;
   provenance?: Provenance;
   refreshState: 'idle' | 'running' | 'failed';
   state: 'missing' | 'ready' | 'unavailable';
 }
 /** Normalized filter values echoed independently from domain output. */
 export type AppliedFilters = Record<string, string | number | string[]>;
+/** Provenance fields that interpret or cite one result; mirror_status returns the full record. */
+export type CallProvenance = Pick<
+  Provenance,
+  | 'sourceName'
+  | 'snapshotMonth'
+  | 'ageDays'
+  | 'ageBasis'
+  | 'stale'
+  | 'staleAfterDays'
+  | 'generationId'
+  | 'includeLocation'
+>;
 /** Mandatory enrichment shared by every single lookup. */
 export interface SingleEnrichment {
   appliedFilters: AppliedFilters;
   notice: string;
-  provenance: Provenance | null;
+  /** The serving mode, never a property of the snapshot, so it stays outside provenance. */
+  piiRedacted: boolean;
+  provenance: CallProvenance | null;
 }
 /** Mandatory enrichment shared by every list, including empty pages. */
 export interface ListEnrichment extends SingleEnrichment {

@@ -51,7 +51,7 @@ export function renderedResult(
   const enrichment: Record<string, unknown> = {};
   const fields = [
     ...text.matchAll(
-      /\*\*(notice|provenance|appliedFilters|totalCount|returnedCount|hasMore|nextOffset|atPagingCap)\*\*/g,
+      /\*\*(notice|provenance|appliedFilters|piiRedacted|totalCount|returnedCount|hasMore|nextOffset|atPagingCap)\*\*/g,
     ),
   ];
   for (const [index, field] of fields.entries()) {

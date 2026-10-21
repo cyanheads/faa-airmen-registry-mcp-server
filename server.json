@@ -23,10 +23,17 @@
         },
         {
           "name": "FAA_AIRMEN_INCLUDE_LOCATION",
-          "description": "Opt in to city and ZIP import, display and filtering.",
+          "description": "Opt in to city and ZIP import; display and filtering also need FAA_AIRMEN_REDACT_PII=false.",
           "format": "string",
           "isRequired": false,
           "default": "false"
+        },
+        {
+          "name": "FAA_AIRMEN_REDACT_PII",
+          "description": "Serving-time personal-data redaction, on by default; only 'false' turns it off.",
+          "format": "string",
+          "isRequired": false,
+          "default": "true"
         },
         {
           "name": "FAA_AIRMEN_STALE_AFTER_DAYS",
@@ -62,10 +69,17 @@
         },
         {
           "name": "FAA_AIRMEN_INCLUDE_LOCATION",
-          "description": "Opt in to city and ZIP import, display and filtering.",
+          "description": "Opt in to city and ZIP import; display and filtering also need FAA_AIRMEN_REDACT_PII=false.",
           "format": "string",
           "isRequired": false,
           "default": "false"
+        },
+        {
+          "name": "FAA_AIRMEN_REDACT_PII",
+          "description": "Serving-time personal-data redaction, on by default; only 'false' turns it off.",
+          "format": "string",
+          "isRequired": false,
+          "default": "true"
         },
         {
           "name": "FAA_AIRMEN_STALE_AFTER_DAYS",

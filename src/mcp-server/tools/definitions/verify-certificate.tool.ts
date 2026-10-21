@@ -13,12 +13,13 @@ import {
   identityInput,
   listEnrichment,
   pagingInput,
+  ratingCode,
 } from '../schemas.js';
 
-/** Find releasable FAA airman records by exact Unique ID or name and read their certificate records. Use name mode to discover IDs, then use an ID for ratings or informational medical fields. A missing or matching record is not a current licensing or operating-privilege determination. */
+/** Find releasable FAA airman records by exact Unique ID or name and read their certificate records. Use name mode to discover IDs, then use an ID for ratings or informational medical fields. Certificate type, level, rating, and type-rating filters must all match one certificate, and each match still returns all its certificates. While the operator's personal-data redaction is on (the default), name mode needs lastName and firstName, nameMatch prefix and city or ZIP filters are rejected, and city and ZIP are withheld. A missing or matching record is not a current licensing or operating-privilege determination. */
 export const verifyCertificateTool = tool('faa_airmen_verify_certificate', {
   description:
-    'Find releasable FAA airman records by exact Unique ID or name and read their certificate records. Use name mode to discover IDs, then use an ID for ratings or informational medical fields. A missing or matching record is not a current licensing or operating-privilege determination.',
+    "Find releasable FAA airman records by exact Unique ID or name and read their certificate records. Use name mode to discover IDs, then use an ID for ratings or informational medical fields. Certificate type, level, rating, and type-rating filters must all match one certificate, and each match still returns all its certificates. While the operator's personal-data redaction is on (the default), name mode needs lastName and firstName, nameMatch prefix and city or ZIP filters are rejected, and city and ZIP are withheld. A missing or matching record is not a current licensing or operating-privilege determination.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z
     .object({
@@ -27,7 +28,35 @@ export const verifyCertificateTool = tool('faa_airmen_verify_certificate', {
         .string()
         .optional()
         .describe(
-          'One FAA certificate type letter or one-to-one alias pilot, CFI, remote_pilot, ground_instructor, mechanic, dispatcher; selects people while retaining all their certificates.',
+          'One FAA certificate type letter, its description from faa_airmen_list_reference topic certificate_types (case-insensitive; underscore or space, such as remote pilot or flight_instructor), or CFI; selects people while retaining all their certificates.',
+        ),
+      certificateLevel: z
+        .string()
+        .optional()
+        .describe(
+          "One level letter listed for the certificateType in faa_airmen_list_reference topic certificate_levels, such as A (airline transport pilot) with certificateType P; requires certificateType and matches the certificate's own level. Trimmed and uppercased; blank means unset.",
+        ),
+      ratingCodes: z
+        .array(ratingCode)
+        .min(1)
+        .max(11)
+        .optional()
+        .describe(
+          'One to eleven rating codes, repeats collapsed; every code must occur on the same certificate as every other requested credential, never across certificates.',
+        ),
+      typeRatings: z
+        .array(
+          z
+            .string()
+            .describe(
+              'Aircraft type designator from faa_airmen_list_reference topic type_ratings, such as B-737, matching any source level; level/designator such as A/B-737 matches that slot level only, which can differ from certificateLevel. The designator is 1–30 letters, digits, spaces, or hyphens and the level one letter; trimmed and uppercased; hyphens are significant.',
+            ),
+        )
+        .min(1)
+        .max(11)
+        .optional()
+        .describe(
+          'One to eleven type-rating designators, repeats collapsed; every designator must occur on the same certificate as every other requested credential.',
         ),
       ...pagingInput,
     })
@@ -56,7 +85,7 @@ export const verifyCertificateTool = tool('faa_airmen_verify_certificate', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'Invalid or blank semantic identity selector.',
       recovery:
-        'Call faa_airmen_list_reference with topic identifiers, then retry with a Unique ID or a nonblank name selector.',
+        'Call faa_airmen_list_reference with topic identifiers, then retry with a Unique ID or a nonblank lastName, plus firstName while personal-data redaction is on.',
       retryable: false,
       thrownBy: 'service',
     },
@@ -65,7 +94,7 @@ export const verifyCertificateTool = tool('faa_airmen_verify_certificate', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'Invalid code, location, or filter combination after normalization.',
       recovery:
-        'Call faa_airmen_list_reference with topic certificate_types or ratings, then retry with the documented filters.',
+        'Correct the filter the error names, taking its codes from the matching faa_airmen_list_reference topic (certificate_types, certificate_levels, ratings, or type_ratings), then retry.',
       retryable: false,
       thrownBy: 'service',
     },
@@ -76,6 +105,17 @@ export const verifyCertificateTool = tool('faa_airmen_verify_certificate', {
       recovery:
         'Retry faa_airmen_verify_certificate or faa_airmen_search_instructors using name and state only; city and ZIP access is disabled by the operator.',
       retryable: false,
+      severity: 'notice',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'pii_redacted',
+      code: JsonRpcErrorCode.Forbidden,
+      when: 'Personal-data redaction is on and the call sends city or ZIP, a name search without both names, or nameMatch prefix.',
+      recovery:
+        'Retry with both lastName and firstName, nameMatch words or exact, and no city or zipCode, or use mode id with a uniqueId; for a personal install, the operator can set FAA_AIRMEN_REDACT_PII=false.',
+      retryable: false,
+      severity: 'notice',
       thrownBy: 'service',
     },
     {

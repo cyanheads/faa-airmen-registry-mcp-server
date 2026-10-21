@@ -3,14 +3,15 @@
  * @module mcp-server/tools/schemas
  */
 import { z } from '@cyanheads/mcp-ts-core';
+import { NAME_MATCHES, REFERENCE_TOPICS } from '@/services/airmen/contracts.js';
+
+type Defined<T> = { [K in keyof T]: Exclude<T[K], undefined> };
 
 /** Omit absent optional arguments before crossing the exact-optional domain boundary. */
-export function definedInput<T extends object>(
-  input: T,
-): { [K in keyof T]: Exclude<T[K], undefined> } {
-  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)) as {
-    [K in keyof T]: Exclude<T[K], undefined>;
-  };
+export function definedInput<T extends object>(input: T): Defined<T> {
+  return Object.fromEntries(
+    Object.entries(input).filter(([, value]) => value !== undefined),
+  ) as Defined<T>;
 }
 
 const sourceFamily = z.enum(['pilot', 'nonpilot']).describe('FAA source file family.');
@@ -23,11 +24,15 @@ const identityFields = {
   city: z
     .string()
     .optional()
-    .describe('Source city; present only with operator-enabled location access.'),
+    .describe(
+      'Source city; present only with operator-enabled location access and personal-data redaction off.',
+    ),
   zipCode: z
     .string()
     .optional()
-    .describe('Source ZIP; present only with operator-enabled location access.'),
+    .describe(
+      'Source ZIP; present only with operator-enabled location access and personal-data redaction off.',
+    ),
 };
 /** Complete privacy-projected identity, including distinct source variants. */
 export const airmanSchema = z
@@ -91,7 +96,7 @@ export const certificateSchema = z
   })
   .describe('Complete source certificate.');
 /** All persisted aggregate provenance fields plus source-age interpretation. */
-export const provenanceSchema = z
+const provenanceSchema = z
   .object({
     archiveUrl: z.string().describe('Official archive download URL.'),
     complete: z.literal(true).describe('Only complete published snapshots are readable.'),
@@ -109,7 +114,11 @@ export const provenanceSchema = z
       .describe('Source member filenames mapped to imported row counts.'),
     generationId: z.string().describe('Immutable published generation identifier.'),
     importedAt: z.string().describe('Snapshot import timestamp.'),
-    includeLocation: z.boolean().describe('Whether this generation retained city and ZIP.'),
+    includeLocation: z
+      .boolean()
+      .describe(
+        'Generation import policy: city and ZIP kept at import, not what this response returns.',
+      ),
     publishedAt: z
       .string()
       .optional()
@@ -139,12 +148,27 @@ export const provenanceSchema = z
     staleAfterDays: z.number().describe('Configured source-age warning threshold in days.'),
   })
   .describe('Complete source provenance without local filesystem paths.');
+/** Per-call provenance: the fields that interpret or cite one result. */
+const callProvenanceSchema = provenanceSchema
+  .pick({
+    sourceName: true,
+    snapshotMonth: true,
+    ageDays: true,
+    ageBasis: true,
+    stale: true,
+    staleAfterDays: true,
+    generationId: true,
+    includeLocation: true,
+  })
+  .describe('Per-call source provenance; topic mirror_status returns the full record.');
 /** Mandatory enrichment for ID lookups. */
 export const singleEnrichment = {
   notice: z
     .string()
-    .describe('Snapshot limitations, absence guidance, and operational notices; may be empty.'),
-  provenance: provenanceSchema
+    .describe(
+      'Snapshot limitations, absence guidance, source-quality notices for the returned records, and operational notices; may be empty.',
+    ),
+  provenance: callProvenanceSchema
     .nullable()
     .describe('Snapshot provenance, or null for static reference topics.'),
   appliedFilters: z
@@ -157,6 +181,11 @@ export const singleEnrichment = {
       ]),
     )
     .describe('Every effective normalized selector, filter, and paging value.'),
+  piiRedacted: z
+    .boolean()
+    .describe(
+      'Operator personal-data redaction: true withholds city, ZIP, and medical fields and limits searches to a full name or Unique ID.',
+    ),
 };
 /** Mandatory enrichment for every paged success, including empty pages. */
 export const listEnrichment = {
@@ -182,13 +211,13 @@ export const nameInput = {
     .string()
     .optional()
     .describe(
-      'LAST NAME including suffixes; 1–60 visible characters after normalization. Blank means unset.',
+      'LAST NAME, which may include a suffix; the default words match finds SMITH JR from SMITH. 1–60 visible characters after normalization. Blank means unset.',
     ),
   firstName: z
     .string()
     .optional()
     .describe(
-      'FIRST NAME including middle names; 1–60 visible characters after normalization. Blank means unset.',
+      'FIRST NAME, which usually includes middle names; the default words match finds JOHN ROBERT from JOHN. 1–60 visible characters after normalization. Blank means unset.',
     ),
   state: z
     .string()
@@ -198,19 +227,23 @@ export const nameInput = {
     .string()
     .optional()
     .describe(
-      'Exact city, 1–60 visible characters; requires operator-enabled location access. Blank means unset.',
+      'Exact city, 1–60 visible characters; requires operator-enabled location access and is rejected while personal-data redaction is on. Blank means unset.',
     ),
   zipCode: z
     .string()
+    .regex(
+      /^\s*(?:[0-9]{5}(?:-?[0-9]{4})?\s*)?$/,
+      'Must be five digits or ZIP+4, such as 99999 or 99999-1234; blank means unset',
+    )
     .optional()
     .describe(
-      'Five-digit ZIP or ZIP+4, preserving leading zeros; requires operator-enabled location access. Blank means unset.',
+      'Five-digit ZIP or ZIP+4, preserving leading zeros; requires operator-enabled location access and is rejected while personal-data redaction is on. Blank means unset.',
     ),
   nameMatch: z
-    .enum(['exact', 'prefix'])
+    .enum(NAME_MATCHES)
     .optional()
     .describe(
-      'Compare each supplied name field exactly or from its beginning; default exact for name searches.',
+      'How each supplied name field matches; default words for name searches. words: the field equals the term or continues with a space after it; only a space separates words, so a hyphenated or apostrophe name is one word. exact: the whole field. prefix: the field begins with the term, also mid-word; rejected while personal-data redaction is on.',
     ),
 };
 /** Flat identity selector; service validates mutually exclusive modes. */
@@ -218,25 +251,36 @@ export const identityInput = {
   mode: z
     .enum(['id', 'name'])
     .describe(
-      'id requires uniqueId and forbids nonblank name/location fields and explicit nameMatch; name requires lastName and forbids nonblank uniqueId.',
+      'id requires uniqueId and forbids nonblank name/location fields and explicit nameMatch; name requires lastName, plus firstName while personal-data redaction is on, and forbids nonblank uniqueId.',
     ),
   uniqueId: z
     .string()
+    .regex(
+      /^\s*(?:[AaCc][0-9]{7}\s*)?$/,
+      'Must be A or C plus seven digits, such as A9999999, from a faa_airmen_verify_certificate mode name result; blank means unset',
+    )
     .optional()
     .describe(
       'Opaque FAA Unique ID returned by faa_airmen_verify_certificate in name mode, A or C plus seven digits, for example A9999999; not a certificate number. Trimmed and uppercased.',
     ),
   ...nameInput,
 };
+/** One rating filter; the instructor and certificate searches share its parsing. */
+export const ratingCode = z
+  .string()
+  .describe(
+    'FAA rating code from faa_airmen_list_reference topic ratings, such as INSTA, matching any source level; level/code such as F/INSTA matches that level only. The code is 1–30 letters, digits, spaces, or hyphens and the level one letter; trimmed and uppercased.',
+  );
 /** Bounded paging over complete people or reference entries. */
 export const pagingInput = {
   limit: z
     .number()
     .int()
     .min(1)
-    .max(50)
     .default(10)
-    .describe('Maximum complete people or reference entries per page; default 10, maximum 50.'),
+    .describe(
+      'Maximum complete people or reference entries per page; default 10, maximum 50. A larger limit returns at most 50, with a notice.',
+    ),
   offset: z
     .number()
     .int()
@@ -252,6 +296,10 @@ export const idInput = z
   .object({
     uniqueId: z
       .string()
+      .regex(
+        /^\s*[AaCc][0-9]{7}\s*$/,
+        'Must be A or C plus seven digits, such as A9999999, from a faa_airmen_verify_certificate mode name result',
+      )
       .describe(
         'Opaque FAA Unique ID from faa_airmen_verify_certificate, A or C plus seven digits, for example A9999999; not a certificate number.',
       ),
@@ -259,15 +307,7 @@ export const idInput = z
   .strict();
 /** All supported static and dynamic reference topics. */
 export const topicSchema = z
-  .enum([
-    'certificate_types',
-    'certificate_levels',
-    'ratings',
-    'type_ratings',
-    'identifiers',
-    'medical_guidance',
-    'mirror_status',
-  ])
+  .enum(REFERENCE_TOPICS)
   .describe('One FAA vocabulary, interpretation guide, or mirror diagnostic topic.');
 /** Fully typed informational medical output. */
 export const medicalRecordSchema = z
@@ -327,14 +367,18 @@ export const referenceOutput = z.object({
       state: z.enum(['missing', 'ready', 'unavailable']).describe('Published mirror availability.'),
       refreshState: z
         .enum(['idle', 'running', 'failed'])
-        .describe('Most recent refresh lifecycle state.'),
+        .describe(
+          'Most recent refresh lifecycle state: idle when none is recorded or the last one completed, running while one is in progress within its 40-minute deadline, failed when the last one did not complete (see lastRefreshFailure).',
+        ),
       provenance: provenanceSchema
         .optional()
         .describe('Latest successful generation provenance, when available.'),
       lastRefreshFailure: z
         .string()
         .optional()
-        .describe('Classified refresh failure stage, without paths or raw exception text.'),
+        .describe(
+          'Classified stage of the last refresh that did not complete, such as acquisition, schema, validation, disk, lock, or integrity; cancelled when its caller stopped it, timeout when one of its own deadlines expired, interrupted when its process ended without recording a result. Never paths or raw exception text.',
+        ),
     })
     .optional()
     .describe('Safe diagnostic state present only for mirror_status.'),

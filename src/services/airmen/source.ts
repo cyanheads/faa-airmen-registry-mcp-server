@@ -6,11 +6,14 @@ import { createHash } from 'node:crypto';
 import { open, rm } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { MirrorError, safeMirrorError } from './mirror-error.js';
+import { FAA_SOURCE_URL } from './reference.js';
 
-/** Canonical FAA publication page; operators cannot override the source. */
-export const SOURCE_PAGE =
-  'https://www.faa.gov/licenses_certificates/airmen_certification/releasable_airmen_download';
-const MAX_ARCHIVE = 200 * 1024 * 1024;
+/** Compressed archive size limit, enforced on download and again on import. */
+export const MAX_ARCHIVE = 200 * 1024 * 1024;
+/** Timeout of one page or archive request attempt; three attempts are made. */
+export const ATTEMPT_TIMEOUT_MS = 180_000;
+/** Overall deadline for discovering and downloading the archive. */
+export const ACQUISITION_DEADLINE_MS = 600_000;
 const FAA_HOSTS = new Set(['www.faa.gov', 'faa.gov', 'registry.faa.gov']);
 
 /** Acquisition metadata is independent of the local archive filename. */
@@ -45,19 +48,21 @@ function allowed(url: URL): void {
   }
 }
 
+/** Monthly archive filename such as /CS102026.ZIP, which every redirect must preserve. */
+function archiveName(url: URL): string | undefined {
+  return /\/CS\d{6}\.zip$/i.exec(url.pathname)?.[0].toUpperCase();
+}
+
 async function get(
   url: string,
   fetcher: typeof fetch,
   signal: AbortSignal,
 ): Promise<{ response: Response; url: string }> {
   let current = new URL(url);
-  const archiveIdentity = /\/CS\d{6}\.zip$/i.exec(current.pathname)?.[0].toUpperCase();
+  const archiveIdentity = archiveName(current);
   for (let redirects = 0; redirects <= 5; redirects++) {
     allowed(current);
-    if (
-      archiveIdentity &&
-      /\/CS\d{6}\.zip$/i.exec(current.pathname)?.[0].toUpperCase() !== archiveIdentity
-    )
+    if (archiveIdentity && archiveName(current) !== archiveIdentity)
       throw new MirrorError(
         'acquisition',
         'FAA archive redirected outside the advertised snapshot month.',
@@ -66,6 +71,9 @@ async function get(
       redirect: 'manual',
       signal,
       headers: { 'User-Agent': 'Mozilla/5.0' },
+    }).catch((error: unknown) => {
+      // A refused connect's cause carries EPERM or EACCES, yet it is a network failure, never disk.
+      throw signal.aborted ? error : new HttpFailure(true, 0);
     });
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get('location');
@@ -97,10 +105,16 @@ async function retry<T>(
 ): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     fetchSignal.throwIfAborted();
+    const attemptSignal = AbortSignal.any([fetchSignal, AbortSignal.timeout(ATTEMPT_TIMEOUT_MS)]);
     try {
-      return await operation(AbortSignal.any([fetchSignal, AbortSignal.timeout(180_000)]));
+      return await operation(attemptSignal);
     } catch (error) {
       fetchSignal.throwIfAborted();
+      if (attempt === 2 && attemptSignal.aborted)
+        throw new MirrorError(
+          'timeout',
+          `The final FAA request attempt timed out after ${ATTEMPT_TIMEOUT_MS / 60_000} minutes; no new snapshot was published.`,
+        );
       if (
         attempt === 2 ||
         error instanceof MirrorError ||
@@ -124,9 +138,28 @@ export async function acquireSource(
   clock: () => Date,
   signal: AbortSignal,
 ): Promise<AcquiredSource> {
-  const deadline = AbortSignal.any([signal, AbortSignal.timeout(600_000)]);
+  const deadline = AbortSignal.any([signal, AbortSignal.timeout(ACQUISITION_DEADLINE_MS)]);
+  try {
+    return await download(path, fetcher, clock, deadline);
+  } catch (error) {
+    // An abort of the caller's signal belongs to its owner; only the acquisition deadline is ours.
+    if (deadline.aborted && !signal.aborted)
+      throw new MirrorError(
+        'timeout',
+        `FAA download exceeded its ${ACQUISITION_DEADLINE_MS / 60_000}-minute deadline; no new snapshot was published.`,
+      );
+    throw error;
+  }
+}
+
+async function download(
+  path: string,
+  fetcher: typeof fetch,
+  clock: () => Date,
+  deadline: AbortSignal,
+): Promise<AcquiredSource> {
   const page = await retry(async (attemptSignal) => {
-    const { response } = await get(SOURCE_PAGE, fetcher, attemptSignal);
+    const { response } = await get(FAA_SOURCE_URL, fetcher, attemptSignal);
     if (!response.body) throw new Error('Missing response stream');
     const chunks: Uint8Array[] = [];
     let length = 0;
@@ -147,7 +180,13 @@ export async function acquireSource(
     ...page.matchAll(/href\s*=\s*["']([^"']*\/CS(\d{2})(\d{4})\.zip(?:\?[^"']*)?)["']/gi),
   ]
     .map((match) => {
-      const url = new URL((match[1] ?? '').replaceAll('&amp;', '&'), SOURCE_PAGE);
+      const href = (match[1] ?? '').replaceAll('&amp;', '&');
+      if (!URL.canParse(href, FAA_SOURCE_URL))
+        throw new MirrorError(
+          'acquisition',
+          'FAA page advertised an archive link that is not a URL.',
+        );
+      const url = new URL(href, FAA_SOURCE_URL);
       allowed(url);
       const month = Number(match[2]);
       if (month < 1 || month > 12)

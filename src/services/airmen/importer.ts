@@ -8,12 +8,13 @@ import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { setImmediate } from 'node:timers/promises';
 import { crc32 } from 'node:zlib';
-import { defineMirror, type SqliteHandle, sqliteMirrorStore } from '@cyanheads/mcp-ts-core/mirror';
+import { defineMirror, sqliteMirrorStore } from '@cyanheads/mcp-ts-core/mirror';
 import { parse } from 'csv-parse';
 import { type Entry, openPromise } from 'yauzl';
 import type { ServerConfig } from '../../config/server-config.js';
 import { MirrorError, safeMirrorError } from './mirror-error.js';
-import { type AcquiredSource, SOURCE_PAGE } from './source.js';
+import { FAA_SOURCE_URL, isDocumentedCode } from './reference.js';
+import { type AcquiredSource, MAX_ARCHIVE } from './source.js';
 import type { SnapshotDatabase, SnapshotMetadata, SourceFamily } from './types.js';
 
 /** Increment when persisted schema or normalization policy changes. */
@@ -54,13 +55,35 @@ const CERT_HEADERS = [
   'EXPIRE DATE',
   ...Array.from({ length: 11 }, (_, i) => `RATING${i + 1}`),
 ];
-const RATING_CODES = new Set(
-  'ADV|AIR|AIRCR|AIRFR|AIRPL|ALL|AME|AMEL|AMELC|AMES|ASE|ASEL|ASES|ASME|BACK|BAL|BASIC|CHEST|ENGINE|FAR|GL|GLAT|GLATGT|GLATSL|GLGT|GLGTSL|GLSL|GROUP I|GROUP II|GYRO|HEL|HELGY|INSPT|INST|INSTA|INSTH|INSTI|INSTP|JET|LAP|LTA|LTO|MAINT|METEOR|NAV|PLIFT|POWER|RADIO|RECIP|ROTOR|SEAT|SPORT|SPUR|TPROP'.split(
-    '|',
-  ),
-);
+/** Exact header row of each required CSV member; auxiliary members have none. */
+const HEADERS = new Map<string, readonly string[]>([
+  ['PILOT_BASIC.csv', BASIC_HEADERS],
+  ['NONPILOT_BASIC.csv', BASIC_HEADERS],
+  [
+    'PILOT_CERT.csv',
+    [...CERT_HEADERS, ...Array.from({ length: 99 }, (_, i) => `TYPERATING${i + 1}`), ''],
+  ],
+  ['NONPILOT_CERT.csv', [...CERT_HEADERS, '']],
+]);
+const MAX_MEMBERS = 16;
+const MAX_UNCOMPRESSED = 2 * 1024 ** 3;
+/** Source medical date shape (MMYYYY); other nonblank values are retained and counted malformed. */
+export const MONTH_YEAR = /^(0[1-9]|1[0-2])\d{4}$/;
+/** Source certificate expiry shape (MMDDYYYY). */
+export const MONTH_DAY_YEAR = /^(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{4}$/;
+/** Source BasicMed date shape (YYYYMMDD). */
+export const YEAR_MONTH_DAY = /^\d{4}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])$/;
 
-async function reserve(directory: string): Promise<void> {
+/** A positional rating slot is well formed only when its first slash is at index 1 and a code follows. */
+export function isMalformedSlot(raw: string, code: string): boolean {
+  return raw.indexOf('/') !== 1 || !code;
+}
+
+/** Opaque FAA Unique ID: A or C plus seven digits. */
+export const UNIQUE_ID = /^[AC][0-9]{7}$/;
+
+/** Require the 1 GiB free-space reserve before writing more mirror data. */
+export async function reserve(directory: string): Promise<void> {
   const space = await statfs(directory);
   if (space.bavail * space.bsize < 1024 ** 3)
     throw new MirrorError('disk', 'Mirror import requires at least 1 GiB free storage reserve.');
@@ -73,6 +96,12 @@ export function normalizeName(value: string): string {
 
 const DDL = [
   'CREATE TABLE identity_variants (unique_id TEXT NOT NULL REFERENCES airmen(unique_id), family TEXT NOT NULL, origin TEXT NOT NULL, first_name TEXT NOT NULL, last_name TEXT NOT NULL, first_name_normalized TEXT NOT NULL, last_name_normalized TEXT NOT NULL, state TEXT, country TEXT, region TEXT, city TEXT, zip_code TEXT, tuple TEXT NOT NULL, PRIMARY KEY(unique_id,family,origin,tuple))',
+  /**
+   * Created before the last-name and state indexes: without sqlite_stat1, SQLite gives an
+   * equal-cost tie to the most recently created index, so those keep two-name and state-bounded
+   * searches. Generations imported without it remain readable at the same SCHEMA_VERSION.
+   */
+  'CREATE INDEX identity_first_names ON identity_variants(first_name_normalized,unique_id)',
   'CREATE INDEX identity_names ON identity_variants(last_name_normalized,first_name_normalized,unique_id)',
   'CREATE INDEX identity_state ON identity_variants(state,last_name_normalized,first_name_normalized,unique_id)',
   'CREATE TABLE certificates (record_id TEXT PRIMARY KEY, unique_id TEXT NOT NULL REFERENCES airmen(unique_id), first_name TEXT NOT NULL, last_name TEXT NOT NULL, type TEXT NOT NULL, level TEXT, legacy_expire_date_raw TEXT, source_families TEXT NOT NULL)',
@@ -83,13 +112,14 @@ const DDL = [
   'CREATE TABLE snapshot_metadata (id INTEGER PRIMARY KEY CHECK(id=1), metadata TEXT NOT NULL)',
 ];
 
-function families(existing: string, family: SourceFamily): string {
-  const values: SourceFamily[] = JSON.parse(existing);
+/** Add a family to a stored JSON family list, keeping pilot before nonpilot. */
+function families(existing: string | undefined, family: SourceFamily): string {
+  const values: SourceFamily[] = existing ? JSON.parse(existing) : [];
   if (!values.includes(family)) values.push(family);
   return JSON.stringify(values.sort((a, b) => (a === b ? 0 : a === 'pilot' ? -1 : 1)));
 }
 
-function count(db: SqliteHandle, table: string): number {
+function count(db: SnapshotDatabase, table: string): number {
   return db.prepare<{ n: number }>(`SELECT count(*) n FROM ${table}`).get()?.n ?? 0;
 }
 
@@ -104,13 +134,12 @@ export function inspectDatabase(db: SnapshotDatabase): {
     issues.push('sqlite_integrity');
   if (db.prepare('PRAGMA foreign_key_check').all().length) issues.push('foreign_keys');
   const counts = {
-    airmen: db.prepare<{ n: number }>('SELECT count(*) n FROM airmen').get()?.n ?? 0,
-    certificates: db.prepare<{ n: number }>('SELECT count(*) n FROM certificates').get()?.n ?? 0,
-    ratings: db.prepare<{ n: number }>('SELECT count(*) n FROM ratings').get()?.n ?? 0,
-    medicalRecords:
-      db.prepare<{ n: number }>('SELECT count(*) n FROM medical_records').get()?.n ?? 0,
+    airmen: count(db, 'airmen'),
+    certificates: count(db, 'certificates'),
+    ratings: count(db, 'ratings'),
+    medicalRecords: count(db, 'medical_records'),
   };
-  const fts = db.prepare<{ n: number }>('SELECT count(*) n FROM airmen_fts_docsize').get()?.n;
+  const fts = count(db, 'airmen_fts_docsize');
   if (
     fts !== counts.airmen ||
     db.prepare('SELECT rowid FROM airmen EXCEPT SELECT id FROM airmen_fts_docsize LIMIT 1').get() ||
@@ -143,7 +172,7 @@ export async function importArchive(
     strictFileNames: true,
     validateEntrySizes: true,
   }).catch((error: unknown) => {
-    throw safeMirrorError(error, 'validation');
+    throw signal.aborted ? error : safeMirrorError(error, 'validation');
   });
   const store = sqliteMirrorStore({
     path: databasePath,
@@ -180,7 +209,7 @@ export async function importArchive(
   });
   let journalClosed = false;
   try {
-    if (zip.fileSize > 200 * 1024 * 1024 || zip.entryCount > 16)
+    if (zip.fileSize > MAX_ARCHIVE || zip.entryCount > MAX_MEMBERS)
       throw new MirrorError(
         'validation',
         'FAA archive exceeds its compressed-size or member-count limit.',
@@ -190,7 +219,7 @@ export async function importArchive(
     for await (const entry of zip.eachEntry()) {
       signal.throwIfAborted();
       if (
-        entries.size >= 16 ||
+        entries.size >= MAX_MEMBERS ||
         entries.has(entry.fileName) ||
         entry.fileName.includes('/') ||
         entry.fileName.includes('\\') ||
@@ -205,7 +234,7 @@ export async function importArchive(
         );
       }
       totalBytes += entry.uncompressedSize;
-      if (totalBytes > 2 * 1024 ** 3)
+      if (totalBytes > MAX_UNCOMPRESSED)
         throw new MirrorError('validation', 'FAA archive exceeds the uncompressed size limit.');
       entries.set(entry.fileName, entry);
     }
@@ -239,70 +268,45 @@ export async function importArchive(
     const applyRow = (name: string, values: string[]) => {
       const family: SourceFamily = name.startsWith('PILOT_') ? 'pilot' : 'nonpilot';
       const id = values[0] ?? '';
-      if (!/^[AC][0-9]{7}$/.test(id))
+      if (!UNIQUE_ID.test(id))
         throw new MirrorError('validation', 'FAA CSV contains an invalid Unique ID.');
       const first = values[1] ?? '';
       const last = values[2] ?? '';
+      const nameColumns = [first, last, normalizeName(first), normalizeName(last)];
       const person = getPerson.get(id);
       if (name.endsWith('_BASIC.csv')) {
         // Street columns never enter a domain tuple or SQL binding.
-        const safe = [
-          first,
-          last,
+        const location = [
           values[6] || null,
           values[8] || null,
           values[9] || null,
           config.includeLocation ? values[5] || null : null,
           config.includeLocation ? values[7] || null : null,
         ];
-        const provenance = person
-          ? families(person.source_families, family)
-          : JSON.stringify([family]);
         insertPerson.run(
           id,
-          first,
-          last,
-          normalizeName(first),
-          normalizeName(last),
-          safe[2] ?? null,
-          safe[3] ?? null,
-          safe[4] ?? null,
-          safe[5] ?? null,
-          safe[6] ?? null,
-          provenance,
+          ...nameColumns,
+          ...location,
+          families(person?.source_families, family),
         );
         insertVariant.run(
           id,
           family,
           'basic',
-          first,
-          last,
-          normalizeName(first),
-          normalizeName(last),
-          safe[2] ?? null,
-          safe[3] ?? null,
-          safe[4] ?? null,
-          safe[5] ?? null,
-          safe[6] ?? null,
-          JSON.stringify(safe),
+          ...nameColumns,
+          ...location,
+          JSON.stringify([first, last, ...location]),
         );
         const medical = values.slice(10, 15);
-        if (medical[0] && !['1', '2', '3'].includes(medical[0])) warnings.unknownCodes++;
+        if (medical[0] && !isDocumentedCode(medical[0], 'medical')) warnings.unknownCodes++;
         if (medical.some(Boolean)) {
           for (const [i, date] of medical.entries())
-            if (
-              i > 0 &&
-              date &&
-              !(
-                i <= 2 ? /^(0[1-9]|1[0-2])\d{4}$/ : /^\d{4}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])$/
-              ).test(date)
-            )
+            if (i > 0 && date && !(i <= 2 ? MONTH_YEAR : YEAR_MONTH_DAY).test(date))
               warnings.malformedDates++;
           const tuple = JSON.stringify(medical);
-          const previous = getMedical.get(id, tuple);
           insertMedical.run(
             id,
-            previous ? families(previous.source_families, family) : JSON.stringify([family]),
+            families(getMedical.get(id, tuple)?.source_families, family),
             ...medical.map((value) => value || null),
             tuple,
           );
@@ -329,10 +333,9 @@ export async function importArchive(
           .digest('hex');
         const previous = getCert.get(recordId);
         const type = values[3] ?? '';
-        if (!'PFAUGE HXMTRILWDNJ'.replaceAll(' ', '').includes(type) || type.length !== 1)
-          warnings.unknownCodes++;
-        if (values[5] && !/^(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{4}$/.test(values[5]))
-          warnings.malformedDates++;
+        if (!isDocumentedCode(type, 'type')) warnings.unknownCodes++;
+        if (values[4] && !isDocumentedCode(values[4], 'level', type)) warnings.unknownCodes++;
+        if (values[5] && !MONTH_DAY_YEAR.test(values[5])) warnings.malformedDates++;
         insertCert.run(
           recordId,
           id,
@@ -341,16 +344,13 @@ export async function importArchive(
           type,
           values[4] || null,
           values[5] || null,
-          previous ? families(previous.source_families, family) : JSON.stringify([family]),
+          families(previous?.source_families, family),
         );
         insertVariant.run(
           id,
           family,
           'certificate',
-          first,
-          last,
-          normalizeName(first),
-          normalizeName(last),
+          ...nameColumns,
           null,
           null,
           null,
@@ -370,8 +370,8 @@ export async function importArchive(
             const slash = raw.indexOf('/');
             const level = slash > 0 ? raw.slice(0, slash).trim() : null;
             const code = slash >= 0 ? raw.slice(slash + 1).trim() : raw;
-            if (slash !== 1 || !code) warnings.malformedRatings++;
-            if (kind === 'rating' && !RATING_CODES.has(code)) warnings.unknownCodes++;
+            if (isMalformedSlot(raw, code)) warnings.malformedRatings++;
+            if (kind === 'rating' && !isDocumentedCode(code, 'rating')) warnings.unknownCodes++;
             insertRating.run(recordId, kind, index + 1, raw, level, code);
           }
         }
@@ -382,9 +382,9 @@ export async function importArchive(
       store,
       logger: {},
       async *sync() {
-        for (const name of [...FILES, ...AUXILIARY].filter((name) => entries.has(name))) {
+        for (const name of [...FILES, ...AUXILIARY]) {
           const entry = entries.get(name);
-          if (!entry) throw new Error('Missing checked member');
+          if (!entry) continue;
           const stream = await zip.openReadStreamPromise(entry);
           let checksum = 0;
           let size = 0;
@@ -392,12 +392,13 @@ export async function importArchive(
             transform(chunk: Buffer, _encoding, callback) {
               size += chunk.length;
               checksum = crc32(chunk, checksum);
-              if (size > entry.uncompressedSize || size > 2 * 1024 ** 3)
+              if (size > entry.uncompressedSize || size > MAX_UNCOMPRESSED)
                 callback(new MirrorError('validation', 'FAA member exceeded its declared size.'));
               else callback(null, chunk);
             },
           });
-          if (!name.endsWith('.csv')) {
+          const expected = HEADERS.get(name);
+          if (!expected) {
             await pipeline(
               stream,
               checked,
@@ -409,15 +410,6 @@ export async function importArchive(
               { signal },
             );
           } else {
-            const expected = name.endsWith('_BASIC.csv')
-              ? BASIC_HEADERS
-              : [
-                  ...CERT_HEADERS,
-                  ...(name === 'PILOT_CERT.csv'
-                    ? Array.from({ length: 99 }, (_, i) => `TYPERATING${i + 1}`)
-                    : []),
-                  '',
-                ];
             const parser = parse({
               bom: true,
               trim: true,
@@ -428,6 +420,13 @@ export async function importArchive(
             let header = false;
             let rows = 0;
             let batch: string[][] = [];
+            const flush = async () => {
+              await reserve(config.mirrorDir);
+              db.transaction(() => {
+                for (const row of batch) applyRow(name, row);
+              });
+              batch = [];
+            };
             const consume = async (chunks: AsyncIterable<string[]>) => {
               for await (const values of chunks) {
                 signal.throwIfAborted();
@@ -459,18 +458,9 @@ export async function importArchive(
                 }
                 batch.push(values.map((value) => value.trim()));
                 rows++;
-                if (batch.length === 1000) {
-                  await reserve(config.mirrorDir);
-                  db.transaction(() => {
-                    for (const row of batch) applyRow(name, row);
-                  });
-                  batch = [];
-                }
+                if (batch.length === 1000) await flush();
               }
-              await reserve(config.mirrorDir);
-              db.transaction(() => {
-                for (const row of batch) applyRow(name, row);
-              });
+              await flush();
             };
             await pipeline(stream, checked, parser, consume, { signal });
             if (!header || rows === 0)
@@ -505,14 +495,14 @@ export async function importArchive(
     }
     db.exec("INSERT INTO airmen_fts(airmen_fts) VALUES('integrity-check')");
     const inspection = inspectDatabase(db);
-    if (inspection.issues.length || count(db, 'airmen') === 0)
+    if (inspection.issues.length || inspection.counts.airmen === 0)
       throw new MirrorError(
         'integrity',
         'FAA generation failed database or relationship validation.',
       );
     const metadata: SnapshotMetadata = {
       sourceName: 'FAA Releasable Airmen Database',
-      sourcePageUrl: SOURCE_PAGE,
+      sourcePageUrl: FAA_SOURCE_URL,
       ...source,
       importedAt: clock().toISOString(),
       generationId,
@@ -532,7 +522,8 @@ export async function importArchive(
     journalClosed = true;
     return metadata;
   } catch (error) {
-    throw safeMirrorError(error, 'validation');
+    // The signal's owner tells a cancellation from a deadline; an abort is never a validation failure.
+    throw signal.aborted ? error : safeMirrorError(error, 'validation');
   } finally {
     zip.close();
     await store.close();

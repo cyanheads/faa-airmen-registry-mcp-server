@@ -13,12 +13,13 @@ import {
   listEnrichment,
   nameInput,
   pagingInput,
+  ratingCode,
 } from '../schemas.js';
 
-/** Find releasable flight and ground instructor certificate records by name, state, and rating codes. Supply at least one name, state, city, ZIP, or rating filter. City and ZIP filters require operator-enabled location access. Legacy expiry fields do not establish instructor currency; CFI certificates no longer expire under the December 2024 rule. */
+/** Find releasable flight and ground instructor certificate records by name, state, and rating codes. Supply at least one name, state, city, ZIP, or rating filter. City and ZIP filters require operator-enabled location access. While the operator's personal-data redaction is on (the default), lastName and firstName are both required, nameMatch prefix and city or ZIP filters are rejected, and city and ZIP are withheld. Legacy expiry fields do not establish instructor currency; CFI certificates no longer expire under the December 2024 rule. */
 export const searchInstructorsTool = tool('faa_airmen_search_instructors', {
   description:
-    'Find releasable flight and ground instructor certificate records by name, state, and rating codes. Supply at least one name, state, city, ZIP, or rating filter. City and ZIP filters require operator-enabled location access. Legacy expiry fields do not establish instructor currency; CFI certificates no longer expire under the December 2024 rule.',
+    "Find releasable flight and ground instructor certificate records by name, state, and rating codes. Supply at least one name, state, city, ZIP, or rating filter. City and ZIP filters require operator-enabled location access. While the operator's personal-data redaction is on (the default), lastName and firstName are both required, nameMatch prefix and city or ZIP filters are rejected, and city and ZIP are withheld. Legacy expiry fields do not establish instructor currency; CFI certificates no longer expire under the December 2024 rule.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z
     .object({
@@ -28,18 +29,12 @@ export const searchInstructorsTool = tool('faa_airmen_search_instructors', {
         .default('both')
         .describe('Select flight F, ground G, or both instructor certificate types; default both.'),
       ratingCodes: z
-        .array(
-          z
-            .string()
-            .describe(
-              'FAA rating code, 1–30 normalized characters using letters, digits, spaces, or hyphens; obtain from faa_airmen_list_reference topic ratings.',
-            ),
-        )
+        .array(ratingCode)
         .min(1)
         .max(11)
         .optional()
         .describe(
-          'One to eleven distinct codes; every code must occur on the same qualifying certificate, never across certificates.',
+          'One to eleven codes, repeats collapsed; every code must occur on the same qualifying certificate, never across certificates. CFII is INSTA, INSTH, INSTI, or INSTP on a flight (F) certificate; MEI is AME or ASME on F; INST, ADV, and BASIC occur only on ground (G) certificates.',
         ),
       ...pagingInput,
     })
@@ -70,7 +65,7 @@ export const searchInstructorsTool = tool('faa_airmen_search_instructors', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'Invalid or blank semantic name filter.',
       recovery:
-        'Call faa_airmen_list_reference with topic identifiers, then retry faa_airmen_search_instructors with a nonblank firstName or lastName, or omit the invalid name filter and use state or ratingCodes.',
+        'Call faa_airmen_list_reference with topic identifiers, then retry faa_airmen_search_instructors with the name field the error names corrected; while personal-data redaction is on, send both lastName and firstName.',
       retryable: false,
       thrownBy: 'service',
     },
@@ -79,7 +74,7 @@ export const searchInstructorsTool = tool('faa_airmen_search_instructors', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'Invalid code, location, or filter combination after normalization.',
       recovery:
-        'Call faa_airmen_list_reference with topic certificate_types or ratings, then retry with the documented filters.',
+        'Correct the filter the error names, taking ratingCodes from faa_airmen_list_reference topic ratings, then retry.',
       retryable: false,
       thrownBy: 'service',
     },
@@ -90,6 +85,17 @@ export const searchInstructorsTool = tool('faa_airmen_search_instructors', {
       recovery:
         'Retry faa_airmen_verify_certificate or faa_airmen_search_instructors using name and state only; city and ZIP access is disabled by the operator.',
       retryable: false,
+      severity: 'notice',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'pii_redacted',
+      code: JsonRpcErrorCode.Forbidden,
+      when: 'Personal-data redaction is on and the call sends city or ZIP, omits lastName or firstName, or sends nameMatch prefix.',
+      recovery:
+        'Retry faa_airmen_search_instructors with both lastName and firstName, nameMatch words or exact, and no city or zipCode; for a personal install, the operator can set FAA_AIRMEN_REDACT_PII=false.',
+      retryable: false,
+      severity: 'notice',
       thrownBy: 'service',
     },
     {

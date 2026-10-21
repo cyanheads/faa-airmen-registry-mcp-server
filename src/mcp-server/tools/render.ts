@@ -30,18 +30,24 @@ export function formatResult(value: unknown): { type: 'text'; text: string }[] {
   return [{ type: 'text', text: renderJson(value) }];
 }
 
+/** Label one enrichment field and render its value as lossless JSON. */
+function labeled(label: string) {
+  return { render: (value: unknown) => `**${label}**\n\n${renderJson(value)}` };
+}
+
 /** Render scalar enrichment too, preserving embedded newlines and Markdown as JSON data. */
 export const singleTrailer = {
-  notice: { render: (value: unknown) => `**notice**\n\n${renderJson(value)}` },
-  provenance: { render: (value: unknown) => `**provenance**\n\n${renderJson(value)}` },
-  appliedFilters: { render: (value: unknown) => `**appliedFilters**\n\n${renderJson(value)}` },
+  notice: labeled('notice'),
+  provenance: labeled('provenance'),
+  appliedFilters: labeled('appliedFilters'),
+  piiRedacted: labeled('piiRedacted'),
 };
 /** Each enrichment field remains independently recoverable as lossless JSON. */
 export const listTrailer = {
   ...singleTrailer,
-  totalCount: { render: (value: unknown) => `**totalCount**\n\n${renderJson(value)}` },
-  returnedCount: { render: (value: unknown) => `**returnedCount**\n\n${renderJson(value)}` },
-  hasMore: { render: (value: unknown) => `**hasMore**\n\n${renderJson(value)}` },
-  nextOffset: { render: (value: unknown) => `**nextOffset**\n\n${renderJson(value)}` },
-  atPagingCap: { render: (value: unknown) => `**atPagingCap**\n\n${renderJson(value)}` },
+  totalCount: labeled('totalCount'),
+  returnedCount: labeled('returnedCount'),
+  hasMore: labeled('hasMore'),
+  nextOffset: labeled('nextOffset'),
+  atPagingCap: labeled('atPagingCap'),
 };
