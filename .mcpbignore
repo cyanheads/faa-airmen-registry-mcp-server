@@ -12,6 +12,7 @@
 /.vscode/
 /.cache/
 /coverage/
+/node_modules/.vitest-cache/
 /data/
 /logs/
 /Dockerfile
