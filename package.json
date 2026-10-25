@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/faa-airmen-registry-mcp-server",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "mcpName": "io.github.cyanheads/faa-airmen-registry-mcp-server",
   "description": "Search FAA airmen certificates, ratings, and informational medical records via MCP. STDIO or Streamable HTTP.",
   "type": "module",
