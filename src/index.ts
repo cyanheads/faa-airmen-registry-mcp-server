@@ -17,6 +17,7 @@ import { initAirmenRegistryService } from './services/airmen/airmen-registry-ser
 await createApp({
   name: 'faa-airmen-registry-mcp-server',
   title: 'faa-airmen-registry-mcp-server',
+  sessionMode: 'stateless',
   tools: [
     verifyCertificateTool,
     getTypeRatingsTool,

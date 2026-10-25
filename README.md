@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.2.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/faa-airmen-registry-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/faa-airmen-registry-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/faa-airmen-registry-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.2.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/faa-airmen-registry-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/faa-airmen-registry-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/faa-airmen-registry-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -19,13 +19,19 @@
 
 </div>
 
+<div align="center">
+
+**Public Hosted Server:** [https://faa-airmen-registry.caseyjhand.com/mcp](https://faa-airmen-registry.caseyjhand.com/mcp)
+
+</div>
+
 ---
 
 ## Overview
 
 FAA airmen certification records from the [Releasable Airmen Database](https://www.faa.gov/licenses_certificates/airmen_certification/releasable_airmen_download), served from a local snapshot. Resolve names to separate identity candidates, read pilot and non-pilot certificates with their ordered ratings, find flight and ground instructors and remote pilots, and read informational medical fields.
 
-Runs as a stdio process or a loopback Streamable HTTP server, directly or in Docker. The operator builds the snapshot with a separate CLI; the server never downloads data, and no API key is needed.
+Runs as a stdio process, a loopback Streamable HTTP server (directly or in Docker), or the public hosted endpoint above. A self-hosted operator builds the snapshot with a separate CLI; the server never downloads data, and no API key is needed.
 
 ### Tools
 
@@ -109,9 +115,48 @@ Agent-friendly output:
 
 ## Getting started
 
-### Initialize the snapshot
+### Public Hosted Instance
 
-Build the local snapshot before connecting a client:
+A public instance is available at `https://faa-airmen-registry.caseyjhand.com/mcp` — no installation or snapshot required. It serves Streamable HTTP; each client takes its own config shape.
+
+For Claude Code:
+
+```sh
+claude mcp add --transport http faa-airmen-registry-mcp-server https://faa-airmen-registry.caseyjhand.com/mcp
+```
+
+For Cline (`cline_mcp_settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "faa-airmen-registry-mcp-server": {
+      "type": "streamableHttp",
+      "url": "https://faa-airmen-registry.caseyjhand.com/mcp"
+    }
+  }
+}
+```
+
+For Cursor (`mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "faa-airmen-registry-mcp-server": {
+      "url": "https://faa-airmen-registry.caseyjhand.com/mcp"
+    }
+  }
+}
+```
+
+Claude Desktop adds remote servers under Settings → Connectors.
+
+The hosted instance runs with redaction on: name searches need both first and last names, `nameMatch: "prefix"` and city/ZIP searches are refused, and medical lookups are unavailable. Whole leading words remain supported by the default `words` matching. For the full surface, self-host with `FAA_AIRMEN_REDACT_PII=false`.
+
+### Self-Hosted / Local
+
+A local install serves its own snapshot, so build it before connecting a client:
 
 ```sh
 export FAA_AIRMEN_MIRROR_DIR="$HOME/.local/share/faa-airmen-registry-mcp-server"
@@ -242,7 +287,7 @@ The CLI doesn't load `.env` itself; pass `--env-file=.env` or export the variabl
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_HTTP_HOST` | HTTP bind address. | `127.0.0.1` |
 | `MCP_HTTP_PORT` | HTTP server port. | `3010` |
-| `MCP_SESSION_MODE` | HTTP session mode: `stateless`, `stateful`, or `auto`; `.env.example` and the Docker image set `stateless`. | `auto` |
+| `MCP_SESSION_MODE` | HTTP session mode: `stateless`, `stateful`, or `auto`; a meaningful value overrides the server's `stateless` declaration. | `stateless` |
 | `MCP_AUTH_MODE` | Authentication: `none`, `jwt`, or `oauth`. | `none` |
 | `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`, etc.). | `info` |
 | `OTEL_ENABLED` | Enable [OpenTelemetry](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry). | `false` |

@@ -2,7 +2,7 @@
 
 **Server:** faa-airmen-registry-mcp-server
 **Version:** 0.2.0
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.15`
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.16`
 **Engines:** Bun ≥1.4.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/server` ^2.3.1
 **Zod:** ^4.6.7
@@ -13,7 +13,7 @@
 
 ## FAA Data Privacy
 
-- Local-only deployment; never offer a public hosted endpoint. Docker remains a supported local deployment option.
+- Hosted deployment keeps `FAA_AIRMEN_REDACT_PII=true`; personal local installs may opt out. Docker remains a supported deployment option.
 - Never persist or return street addresses. Discard street columns before persistence; city and ZIP output require explicit operator opt-in.
 - `FAA_AIRMEN_REDACT_PII` is on by default for every transport and applies at serving time only; it never changes what the mirror imports. While on, name-mode searches need both `lastName` and `firstName`, `nameMatch: "prefix"` and `city`/`zipCode` filters are refused, city and ZIP are omitted from output even with `FAA_AIRMEN_INCLUDE_LOCATION=true`, and `faa_airmen_check_medical_status` refuses every call. Refusals carry the reason `pii_redacted`, and every successful response carries `piiRedacted`. A personal local install that wants the full surface sets `FAA_AIRMEN_REDACT_PII=false`.
 - Medical fields are informational FAA snapshot records. Never infer medical fitness, current operational privileges, instructor currency, or Part 107 recurrent-training currency.
@@ -62,7 +62,7 @@ Each handler calls `getAirmenRegistryService()`, passes `ctx` for cancellation, 
 
 `src/config/server-config.ts` maps `mirrorDir`, `includeLocation`, `redactPii`, and `staleAfterDays` through `parseEnvConfig` to `FAA_AIRMEN_MIRROR_DIR`, `FAA_AIRMEN_INCLUDE_LOCATION`, `FAA_AIRMEN_REDACT_PII`, and `FAA_AIRMEN_STALE_AFTER_DAYS`. Location accepts only `true`/`false` and defaults off; redaction defaults on and only `false` (any case, trimmed) turns it off, so no value fails startup; stale age is an integer 1–366, default 45. The mirror directory defaults to platform user-data storage.
 
-`createApp()` in `src/index.ts` sets bare `name` and `title`, registers all six tools, and initializes the service in `setup()` without opening or downloading a mirror. The compiled `dist/cli/mirror.js` alone handles operator `init`, `refresh`, `verify`, `status`, and `prune`; `src/cli/mirror-command.ts` holds its dispatch, cancellation, and output.
+`createApp()` in `src/index.ts` sets bare `name` and `title`, declares `sessionMode: 'stateless'`, registers all six tools, and initializes the service in `setup()` without opening or downloading a mirror. A meaningful `MCP_SESSION_MODE` environment value still overrides the declaration. No handler requests client input. The compiled `dist/cli/mirror.js` alone handles operator `init`, `refresh`, `verify`, `status`, and `prune`; `src/cli/mirror-command.ts` holds its dispatch, cancellation, and output.
 
 ## Context
 
