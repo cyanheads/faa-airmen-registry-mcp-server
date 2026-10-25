@@ -1,5 +1,6 @@
 /** Production contract execution over real SQLite with both client consumption surfaces. */
 
+import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -828,12 +829,15 @@ describe('FAA tool production contracts', () => {
         .structuredContent,
     ).toMatchObject({ totalCount: 2 });
   });
-  it('advertises uniqueId and zipCode patterns that accept every value the service accepts', async () => {
-    const located = new AirmenRegistryService({
-      mirrorDir: directory,
-      includeLocation: true,
-      staleAfterDays: 45,
-      redactPii: false,
+  describe('advertised uniqueId and zipCode patterns', () => {
+    let located: AirmenRegistryService;
+    beforeEach(() => {
+      located = new AirmenRegistryService({
+        mirrorDir: directory,
+        includeLocation: true,
+        staleAfterDays: 45,
+        redactPii: false,
+      });
     });
     /** Validation passed when the call reached the uninitialized mirror. */
     const accepts = async (run: () => unknown) => {
@@ -843,7 +847,7 @@ describe('FAA tool production contracts', () => {
       } catch (error) {
         const reason = (error as { data?: { reason?: string } }).data?.reason;
         if (reason === 'mirror_missing') return true;
-        expect(['invalid_identity', 'invalid_filter']).toContain(reason);
+        assert.ok(reason === 'invalid_identity' || reason === 'invalid_filter', String(reason));
         return false;
       }
     };
@@ -877,11 +881,13 @@ describe('FAA tool production contracts', () => {
     };
     const fields = [
       {
+        name: 'required uniqueId',
         schema: tools[1].input.shape.uniqueId,
         values: variants(['A9999999', 'c0000001', 'A999999']),
         service: (uniqueId: string) => located.getRatings({ uniqueId }),
       },
       {
+        name: 'optional uniqueId',
         schema: tools[0].input.shape.uniqueId,
         values: variants(['A9999999', 'c0000001', 'A999999']),
         service: async (uniqueId: string) =>
@@ -889,31 +895,36 @@ describe('FAA tool production contracts', () => {
           located.verifyCertificates({ mode: 'name', lastName: 'X', uniqueId }),
       },
       {
+        name: 'zipCode',
         schema: tools[0].input.shape.zipCode,
         values: variants(['99999', '99999-1234', '999991234', '9999']),
         service: (zipCode: string) =>
           located.verifyCertificates({ mode: 'name', lastName: 'X', zipCode }),
       },
     ];
-    for (const { schema, values, service } of fields) {
-      let accepted = 0;
-      const missed: string[] = [];
-      for (const value of values) {
-        const outcome = await accepts(() => service(value));
-        if (!outcome) continue;
-        accepted++;
-        if (!schema.safeParse(value).success) missed.push(JSON.stringify(value));
-      }
-      expect(accepted).toBeGreaterThan(100);
-      expect(missed).toEqual([]);
-    }
-    for (const [schema, value] of [
+    it.each(fields)(
+      '$name accepts every value the service accepts',
+      async ({ schema, values, service }) => {
+        let accepted = 0;
+        const missed: string[] = [];
+        for (const value of values) {
+          const outcome = await accepts(() => service(value));
+          if (!outcome) continue;
+          accepted++;
+          if (!schema.safeParse(value).success) missed.push(JSON.stringify(value));
+        }
+        expect(accepted).toBeGreaterThan(100);
+        expect(missed).toEqual([]);
+      },
+    );
+    it.each([
       [tools[1].input.shape.uniqueId, 'A 9999999'],
       [tools[1].input.shape.uniqueId, 'A９999999'],
       [tools[0].input.shape.zipCode, '99999–1234'],
       [tools[0].input.shape.zipCode, '99999 1234'],
-    ] as const)
+    ] as const)('rejects malformed value %#', (schema, value) => {
       expect(schema.safeParse(value).success).toBe(false);
+    });
   });
   it('clamps a limit above 50 on both surfaces and accepts descriptions and level/code ratings', async () => {
     await clean().initialize();
