@@ -3,6 +3,8 @@
  * @module mcp-server/tools/render
  */
 
+import { markdownLink } from '@cyanheads/mcp-ts-core/utils';
+
 /** Render arbitrary JSON data without allowing embedded source strings to end the fence. */
 export function renderJson(value: unknown): string {
   const json = JSON.stringify(value, null, 2);
@@ -19,9 +21,7 @@ export function renderJson(value: unknown): string {
     }
   }
   visit(value);
-  const links = [...urls].map(
-    (url) => `[Source](<${url.replaceAll('\\', '%5C').replaceAll('>', '%3E')}>)`,
-  );
+  const links = [...urls].map((url) => markdownLink('Source', url));
   return `${fence}json\n${json}\n${fence}${links.length ? `\n\n${links.join('\n')}` : ''}`;
 }
 
