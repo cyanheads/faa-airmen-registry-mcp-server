@@ -192,18 +192,50 @@ describe('faa-airmen-registry-mirror CLI', () => {
     });
   });
 
-  it('names an unreadable REFRESH.json, not verify, when prune refuses because of it', async () => {
+  it('prints refresh null on status when REFRESH.json is absent', async () => {
     await initialized();
-    await writeFile(join(directory, 'REFRESH.json'), '{not json');
-    expect((await cli('verify')).code).toBe(0);
-    expect(await cli('prune')).toEqual({
-      code: 1,
-      stdout: '',
-      stderr:
-        'unavailable: REFRESH.json is unreadable, so prune cannot confirm the published mirror is ready; nothing was deleted. Remove REFRESH.json, which records only the last refresh outcome, and run prune again.\n',
-    });
     await rm(join(directory, 'REFRESH.json'));
-    expect(await cli('prune')).toMatchObject({ code: 0, stderr: '' });
+    const result = await cli('status');
+    expect(result).toMatchObject({ code: 0, stderr: '' });
+    expect(result.stdout).toContain('"refresh":null');
+  });
+
+  it('exits 0 on status and prune with an unreadable REFRESH.json, reporting it and leaving it in place', async () => {
+    await initialized();
+    await new AirmenMirror(
+      { mirrorDir: directory, includeLocation: false, staleAfterDays: 45, redactPii: false },
+      { fetch: sourceFetch(replacement()) },
+    ).refresh();
+    const kept = await published();
+    await writeFile(join(directory, 'REFRESH.json'), '{not json');
+    const status = await cli('status');
+    expect(status).toMatchObject({ code: 0, stderr: '' });
+    expect(status.stdout).toContain('"refresh":{"status":"unreadable"}');
+    expect(JSON.parse(status.stdout)).toMatchObject({
+      ready: true,
+      status: 'ready',
+      provenance: { generationId: kept },
+      supersededGenerations: { count: 1, unmeasured: 0 },
+    });
+    expect((await cli('verify')).code).toBe(0);
+    const pruned = await cli('prune');
+    expect(pruned).toMatchObject({ code: 0, stderr: '' });
+    expect(JSON.parse(pruned.stdout)).toMatchObject({ ok: true, kept, failed: [] });
+    expect(await readFile(join(directory, 'REFRESH.json'), 'utf8')).toBe('{not json');
+  });
+
+  it('reports missing with the unreadable refresh on status when CURRENT is absent', async () => {
+    await initialized();
+    await rm(join(directory, 'CURRENT'));
+    await writeFile(join(directory, 'REFRESH.json'), '{not json');
+    const result = await cli('status');
+    expect(result).toMatchObject({ code: 0, stderr: '' });
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ready: false,
+      status: 'missing',
+      provenance: null,
+      refresh: { status: 'unreadable' },
+    });
   });
 
   it('prints the published-then-failed message and exits 1 when a storage step after CURRENT fails', async () => {

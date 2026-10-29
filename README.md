@@ -38,7 +38,7 @@ Runs as a stdio process, a loopback Streamable HTTP server (directly or in Docke
 | Tool | Description |
 |:---|:---|
 | `faa_airmen_verify_certificate` | Find identity candidates by name or FAA Unique ID, optionally narrowed by certificate type, level, and ratings, and read their complete certificate records |
-| `faa_airmen_get_type_ratings` | Read all pilot-family certificates and their aircraft type, category/class, and instrument ratings |
+| `faa_airmen_get_type_ratings` | Read a person's pilot, flight instructor, remote pilot, and flight engineer certificates with their aircraft type, category/class, and instrument ratings |
 | `faa_airmen_check_medical_status` | Read informational medical and BasicMed fields without assessing fitness or eligibility |
 | `faa_airmen_search_instructors` | Find flight and ground instructor records by name, state, and ratings |
 | `faa_airmen_verify_remote_pilot` | Find releasable remote pilot certificate records by name or Unique ID |
@@ -52,6 +52,7 @@ Runs as a stdio process, a loopback Streamable HTTP server (directly or in Docke
 - `mode: "id"` takes one `uniqueId`, an opaque A or C plus seven digits that is not a certificate number, and rejects name and location fields
 - `certificateType` (a type letter, its reference topic `certificate_types` description such as `remote pilot` or `flight_instructor` in any case, or `CFI`) selects people but returns all their certificates; people sharing a name stay separate candidates
 - `certificateLevel` (one letter from reference topic `certificate_levels`; requires `certificateType`), `ratingCodes` (1–11 codes from topic `ratings`), and `typeRatings` (1–11 designators from topic `type_ratings`, such as `B-737`) narrow candidates further. Every requested credential must sit on one certificate, and matches still return all their certificates. Repeats collapse. A bare code or designator matches any level, and `level/code` only that slot's level: `A/B-737` is a type rating held at ATP level, while `certificateLevel: "A"` with `B-737` asks for an ATP certificate carrying it at any level, `C/B-737` included
+- `ratingCodes` carries the same CFII and MEI mapping as `faa_airmen_search_instructors`; `CFII` or `MEI` sent as a code matches nothing. When a zero result routes to topic `ratings` and the codes sent include `CFII`, `MEI`, or one of their codes, the notice names the alternatives and, unless the call sent `certificateType: "F"`, says to send each with it, since a bare `INSTA` also matches a pilot certificate's instrument rating
 - A zero result with credential filters says how many people the name search matches without them, so a name miss reads apart from a credential miss
 - With `FAA_AIRMEN_REDACT_PII` on (the default), name mode needs both `lastName` and `firstName` and refuses `nameMatch: "prefix"`, `city`, and `zipCode` with `pii_redacted`; city and ZIP are omitted from results
 
@@ -59,14 +60,15 @@ Runs as a stdio process, a loopback Streamable HTTP server (directly or in Docke
 
 ### `faa_airmen_get_type_ratings` <sub>tool</sub>
 
-- One `uniqueId` from `faa_airmen_verify_certificate`; returns every certificate from the FAA pilot files with ordered `ratings` and `typeRatings` slots, each keeping its `raw` value, `ordinal`, and `code`
+- One `uniqueId` from a `faa_airmen_verify_certificate`, `faa_airmen_search_instructors`, or `faa_airmen_verify_remote_pilot` result; returns every certificate from the FAA pilot files (pilot, flight instructor, authorized aircraft instructor, remote pilot, flight engineer) with ordered `ratings` and `typeRatings` slots, each keeping its `raw` value, `ordinal`, and `code`
+- Ground instructor, mechanic, and other non-pilot certificates are not included; `faa_airmen_verify_certificate` in `mode: "id"` returns every certificate
 - `found: false` for an unknown ID; a known person with only non-pilot certificates gets an empty `certificates` array
 
 ---
 
 ### `faa_airmen_check_medical_status` <sub>tool</sub>
 
-- One `uniqueId`; returns each distinct reported medical record: `medicalClass`, `medicalDateRaw` and `medicalExpireDateRaw` (normally MMYYYY), and the BasicMed course and checklist dates (normally YYYYMMDD)
+- One `uniqueId` from a `faa_airmen_verify_certificate`, `faa_airmen_search_instructors`, or `faa_airmen_verify_remote_pilot` result; returns each distinct reported medical record: `medicalClass`, `medicalDateRaw` and `medicalExpireDateRaw` (normally MMYYYY), and the BasicMed course and checklist dates (normally YYYYMMDD)
 - `found` separates an unknown ID from a known person, and `hasReportedMedicalFields: false` means nothing was reported, never an adverse finding. Every result carries a `disclaimer`: the fields are informational, not evidence of fitness or eligibility
 - With `FAA_AIRMEN_REDACT_PII` on (the default), every call is refused with `pii_redacted`
 
@@ -76,6 +78,7 @@ Runs as a stdio process, a loopback Streamable HTTP server (directly or in Docke
 
 - Needs at least one of `lastName`, `firstName`, `state`, `city`, `zipCode`, or `ratingCodes`; `instructorType` is `flight` (F), `ground` (G), or `both` (default)
 - `ratingCodes` takes 1–11 codes from reference topic `ratings`, all required on the same certificate; repeats collapse. A bare code matches any source level, and `level/code` (the `raw` form results return, such as `F/INSTA`; the level is one letter) only that level. CFII is `INSTA`, `INSTH`, `INSTI`, or `INSTP` on F and MEI is `AME` or `ASME`; `INST`, `ADV`, and `BASIC` occur only on G
+- A zero result that sent `ratingCodes` with a name or location filter counts the instructors of the requested type those filters match without the codes: a positive count points to the rating codes, zero to the name and location filters. A rating-codes route after `CFII`, `MEI`, or one of their codes also names the alternatives; after an `instructorType: "ground"` search it says to send them with `flight` or `both`, since all of them sit on F
 - With `FAA_AIRMEN_REDACT_PII` on (the default), a name search needs both `lastName` and `firstName`, and `nameMatch: "prefix"`, `city`, and `zipCode` are refused with `pii_redacted`; city and ZIP are omitted from results
 - Matches carry their complete qualifying `instructorCertificates`. Legacy expiry fields don't establish currency, and CFI certificates no longer expire under the December 2024 rule
 
@@ -93,7 +96,7 @@ Runs as a stdio process, a loopback Streamable HTTP server (directly or in Docke
 
 - `topic` is `certificate_types`, `certificate_levels`, `ratings`, `type_ratings`, `identifiers`, `medical_guidance`, or `mirror_status`; the four vocabulary topics take a case-insensitive `filter` of up to 80 characters
 - Static topics and `mirror_status` answer before a snapshot exists; `type_ratings` lists the designators observed in the imported snapshot
-- `mirror_status` returns `mirrorStatus.state` (`missing`, `ready`, `unavailable`), `refreshState` (`idle`, `running`, `failed`), `lastRefreshFailure` (the stage of a refresh that didn't complete, such as `acquisition`, `validation`, `disk`, `cancelled`, `timeout`, or `interrupted` for one whose process ended without recording a result), and the latest generation's provenance, without filesystem paths
+- `mirror_status` returns `mirrorStatus.state` (`missing`, `ready`, `unavailable`), `refreshState` (`idle`, `running`, `failed`, or `unreadable` when `REFRESH.json` can't be read or isn't a valid refresh record; removing it is safe, and the next refresh rewrites it), `lastRefreshFailure` (the stage of a refresh that didn't complete, such as `acquisition`, `validation`, `disk`, `cancelled`, `timeout`, or `interrupted` for one whose process ended without recording a result), and the latest generation's provenance, without filesystem paths
 
 ## Features
 
@@ -110,9 +113,9 @@ FAA-specific:
 Agent-friendly output:
 
 - Provenance on every snapshot-backed response: source name, snapshot month, source age with a `stale` flag, generation ID, and the generation's location import policy, plus the normalized `appliedFilters`; `faa_airmen_list_reference` topic `mirror_status` returns the full record, including hashes, row counts, and source-quality warning counts
-- Whole-record paging: list tools return complete people within a ~24 KiB response budget, so `limit` (default 10, at most 50; a larger limit returns 50 with a notice) is an upper bound. `totalCount`, `returnedCount`, and `nextOffset` describe the actual page; offsets stop at 10,000, where `atPagingCap` asks for narrower filters
+- Whole-record paging: list tools return complete people within a ~24 KiB response budget, so `limit` (default 10, at most 50; a larger limit returns 50 with a notice) is an upper bound. `totalCount`, `returnedCount`, and `nextOffset` describe the actual page, and a page the budget cut short of `limit` says so in its notice with the offset to continue from; offsets stop at 10,000, where `atPagingCap` asks for narrower filters
 - A published Agent Skill, `faa-airmen-registry-guide`, served over MCP as `skill://faa-airmen-registry-guide/SKILL.md` and shipped in the plugin, npm package, `.mcpb`, and image: mapping CFII, MEI, ATP, and type-rating shorthand to codes, one call per alternative code, name matches that miss silently, reading each rating at its own level, and the stop rule before reporting a credential absent
-- Typed failures that name the next call: `mirror_missing`, `location_access_disabled`, `pii_redacted`, `invalid_filter`, and the other declared reasons each carry a recovery step. A validation failure names the field and its expected form (`state must be a two-letter state or territory code.`), never the value, and empty pages still return totals and guidance
+- Typed failures that name the next call: `mirror_missing`, `location_access_disabled`, `pii_redacted`, `invalid_filter`, and the other declared reasons each carry a recovery step. A validation failure names the field and its expected form (`state must be a two-letter USPS state, territory, or military code.`), never the value, and empty pages still return totals and guidance
 
 ## Getting started
 

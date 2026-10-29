@@ -25,7 +25,13 @@ import {
   reserve,
   SCHEMA_VERSION,
 } from './importer.js';
-import { errorCode, MirrorError, type MirrorStage, safeMirrorError } from './mirror-error.js';
+import {
+  errorCode,
+  MIRROR_STAGES,
+  MirrorError,
+  type MirrorStage,
+  safeMirrorError,
+} from './mirror-error.js';
 import { acquireSource } from './source.js';
 import type {
   GenerationSummary,
@@ -33,6 +39,7 @@ import type {
   OperatorStatus,
   Provenance,
   PruneResult,
+  RefreshRecord,
   RefreshState,
   SnapshotDatabase,
   SnapshotLease,
@@ -163,6 +170,37 @@ function validateMetadata(value: unknown, current: Current): SnapshotMetadata {
     );
   }
   return metadata;
+}
+
+/** Writers store `Date#toISOString()`; `Date.parse` alone also accepts `"1"`, `"0"`, or `"May 5"`. */
+function isTimestamp(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) &&
+    Number.isFinite(Date.parse(value))
+  );
+}
+function isStage(value: unknown): value is MirrorStage {
+  return MIRROR_STAGES.some((stage) => stage === value);
+}
+
+/** Parse REFRESH.json into its known fields; undefined when it is not a refresh record. */
+function parseRefreshRecord(value: unknown): RefreshRecord | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const { status, startedAt, finishedAt, stage } = value as Record<string, unknown>;
+  if (
+    (status !== 'in_progress' && status !== 'complete' && status !== 'failed') ||
+    !isTimestamp(startedAt) ||
+    (finishedAt !== undefined && !isTimestamp(finishedAt)) ||
+    (stage !== undefined && !isStage(stage))
+  )
+    return undefined;
+  return {
+    status,
+    startedAt,
+    ...(finishedAt !== undefined && { finishedAt }),
+    ...(stage !== undefined && { stage }),
+  };
 }
 
 /** Overall deadline of one init or refresh; an older in-progress record cannot belong to a live writer. */
@@ -320,40 +358,31 @@ export class AirmenMirror {
   }
 
   /**
-   * Read the last recorded refresh state; null when no refresh has run. A record still in
-   * progress past the refresh deadline belongs to a writer that ended without recording a
-   * result, on any host, so it reads as interrupted. Reading never changes the record or lock.
+   * Read the last recorded refresh state; null when no refresh has run, `unreadable` when
+   * REFRESH.json exists but cannot be read, parsed, or validated. A record still in progress past
+   * the refresh deadline belongs to a writer that ended without recording a result, on any host,
+   * so it reads as interrupted. Reading never changes the record or lock.
    */
   async refreshState(): Promise<RefreshState | null> {
-    let state: RefreshState;
+    let raw: unknown;
     try {
-      state = (await readJson(join(this.config.mirrorDir, 'REFRESH.json'))) as RefreshState;
+      raw = await readJson(join(this.config.mirrorDir, 'REFRESH.json'));
     } catch (error) {
-      if (isMissing(error)) return null;
-      throw error;
+      return isMissing(error) ? null : { status: 'unreadable' };
     }
+    const record = parseRefreshRecord(raw);
+    if (!record) return { status: 'unreadable' };
     if (
-      state.status === 'in_progress' &&
-      this.clock().getTime() - Date.parse(state.startedAt) > REFRESH_DEADLINE_MS
+      record.status === 'in_progress' &&
+      this.clock().getTime() - Date.parse(record.startedAt) > REFRESH_DEADLINE_MS
     )
-      return { status: 'failed', stage: 'interrupted', startedAt: state.startedAt };
-    return state;
+      return { status: 'failed', stage: 'interrupted', startedAt: record.startedAt };
+    return record;
   }
 
   /** Read readiness, policy and last refresh state without creating any paths. */
   async status(): Promise<MirrorStatus> {
-    let refresh: RefreshState | null;
-    try {
-      refresh = await this.refreshState();
-    } catch {
-      return {
-        ready: false,
-        status: 'unavailable',
-        provenance: null,
-        importPolicy: null,
-        refresh: null,
-      };
-    }
+    const refresh = await this.refreshState();
     try {
       using lease = await this.acquire();
       return {
@@ -432,19 +461,11 @@ export class AirmenMirror {
     }
     try {
       const current = await this.status();
-      if (!current.provenance) {
-        // Status is unavailable whenever the refresh record is unreadable, and verify never reads it.
-        const recordReadable = await this.refreshState().then(
-          () => true,
-          () => false,
-        );
+      if (!current.provenance)
         throw new MirrorError(
           current.status === 'missing' ? 'missing' : 'unavailable',
-          recordReadable
-            ? 'Prune requires a ready published mirror; nothing was deleted. Check it with faa-airmen-registry-mirror verify.'
-            : 'REFRESH.json is unreadable, so prune cannot confirm the published mirror is ready; nothing was deleted. Remove REFRESH.json, which records only the last refresh outcome, and run prune again.',
+          'Prune requires a ready published mirror; nothing was deleted. Check it with faa-airmen-registry-mirror verify.',
         );
-      }
       const kept = current.provenance.generationId;
       const result: PruneResult = {
         ok: true,
@@ -558,7 +579,7 @@ export class AirmenMirror {
         startedAt,
         finishedAt: this.clock().toISOString(),
         ...(stage && { stage }),
-      } satisfies RefreshState);
+      } satisfies RefreshRecord);
     let published = false;
     try {
       await chmod(this.config.mirrorDir, 0o700);
@@ -568,7 +589,7 @@ export class AirmenMirror {
       await atomicJson(this.config.mirrorDir, 'REFRESH.json', {
         status: 'in_progress',
         startedAt,
-      } satisfies RefreshState);
+      } satisfies RefreshRecord);
       await reserve(this.config.mirrorDir);
       await mkdir(staging, { mode: 0o700 });
       const source = await acquireSource(archive, this.fetcher, this.clock, signal);

@@ -66,6 +66,69 @@ async function refreshRecord(directory: string) {
   };
 }
 
+const RECORD_START = '2026-10-19T00:00:00.000Z';
+/** Every way REFRESH.json can exist without holding a valid refresh record; each replaces the file at `path`. */
+const UNREADABLE_RECORDS: [string, (path: string) => Promise<void>][] = [
+  ['truncated JSON', (path) => writeFile(path, '{')],
+  ['JSON null', (path) => writeFile(path, 'null')],
+  ['an array', (path) => writeFile(path, '[]')],
+  ['a number', (path) => writeFile(path, '42')],
+  ['in_progress without startedAt', (path) => writeFile(path, '{"status":"in_progress"}')],
+  [
+    'in_progress with an unparseable startedAt',
+    (path) => writeFile(path, '{"status":"in_progress","startedAt":"not-a-date"}'),
+  ],
+  [
+    'in_progress with a startedAt Date.parse accepts but no writer emits',
+    (path) => writeFile(path, '{"status":"in_progress","startedAt":"1"}'),
+  ],
+  [
+    'an unknown status',
+    (path) => writeFile(path, JSON.stringify({ status: 'running', startedAt: RECORD_START })),
+  ],
+  [
+    'failed with a stage that is not a stage',
+    (path) =>
+      writeFile(
+        path,
+        JSON.stringify({
+          status: 'failed',
+          stage: 42,
+          startedAt: RECORD_START,
+          finishedAt: RECORD_START,
+        }),
+      ),
+  ],
+  [
+    'complete with an unparseable finishedAt',
+    (path) =>
+      writeFile(
+        path,
+        JSON.stringify({ status: 'complete', startedAt: RECORD_START, finishedAt: 'later' }),
+      ),
+  ],
+  ['a directory', (path) => mkdir(path)],
+  [
+    'a file without read permission',
+    async (path) => {
+      await writeFile(path, JSON.stringify({ status: 'complete', startedAt: RECORD_START }));
+      await chmod(path, 0o000);
+    },
+  ],
+];
+/** Replace REFRESH.json in `directory` with the damaged form `damage` writes. */
+async function damageRecord(directory: string, damage: (path: string) => Promise<void>) {
+  const path = join(directory, 'REFRESH.json');
+  await rm(path, { recursive: true, force: true });
+  await damage(path);
+  return path;
+}
+/** Identity of a directory entry: a rewrite, replacement, or mode change alters it. */
+async function fingerprint(path: string) {
+  const { ino, mode, size, mtimeMs } = await lstat(path);
+  return { ino, mode, size, mtimeMs };
+}
+
 /** Network fake whose page or archive request never settles until its signal aborts. */
 function hangingFetch(hang: 'page' | 'archive', entered: () => void = () => {}): typeof fetch {
   const inner = sourceFetch(zipSource());
@@ -691,6 +754,74 @@ describe('synthetic FAA mirror', () => {
     },
   );
 
+  it.each(UNREADABLE_RECORDS)(
+    'reports the published generation as ready and the refresh as unreadable when REFRESH.json is %s, changing neither file',
+    async (_label, damage) => {
+      await mirror().initialize();
+      const generationId = await published(directory);
+      const record = await damageRecord(directory, damage);
+      const lock = join(directory, 'WRITER.lock');
+      await writeFile(lock, 'synthetic-dead-owner');
+      const before = { record: await fingerprint(record), lock: await fingerprint(lock) };
+      const status = await mirror().status();
+      expect(status).toMatchObject({
+        ready: true,
+        status: 'ready',
+        provenance: { generationId },
+        importPolicy: { includeLocation: false },
+      });
+      expect(status.refresh).toEqual({ status: 'unreadable' });
+      expect(await mirror().verifyMirror()).toMatchObject({ ok: true, issues: [] });
+      expect({ record: await fingerprint(record), lock: await fingerprint(lock) }).toEqual(before);
+    },
+  );
+
+  it('reports missing with the unreadable refresh when CURRENT is absent', async () => {
+    await mirror().initialize();
+    await rm(join(directory, 'CURRENT'));
+    await damageRecord(directory, (path) => writeFile(path, '{'));
+    expect(await mirror().status()).toEqual({
+      ready: false,
+      status: 'missing',
+      provenance: null,
+      importPolicy: null,
+      refresh: { status: 'unreadable' },
+    });
+  });
+
+  it('reads a valid record as its known fields only, and an absent one as null', async () => {
+    await mirror().initialize();
+    const record = {
+      status: 'failed',
+      stage: 'disk',
+      startedAt: RECORD_START,
+      finishedAt: '2026-10-19T00:05:00.000Z',
+    };
+    await writeFile(join(directory, 'REFRESH.json'), JSON.stringify({ ...record, note: 'extra' }));
+    expect((await mirror().status()).refresh).toEqual(record);
+    await rm(join(directory, 'REFRESH.json'));
+    expect((await mirror().status()).refresh).toBeNull();
+  });
+
+  it('init over a ready mirror with a malformed REFRESH.json builds nothing; an unchanged refresh rewrites it as complete', async () => {
+    await mirror().initialize();
+    const before = await generations(directory);
+    const record = await damageRecord(directory, (path) => writeFile(path, '{'));
+    expect(await mirror().initialize()).toMatchObject({
+      ready: true,
+      refresh: { status: 'unreadable' },
+    });
+    expect(await generations(directory)).toEqual(before);
+    expect(await readFile(record, 'utf8')).toBe('{');
+    expect(await mirror().refresh()).toMatchObject({
+      ready: true,
+      refresh: { status: 'complete' },
+    });
+    expect(await generations(directory)).toEqual(before);
+    expect(await refreshRecord(directory)).toMatchObject({ status: 'complete' });
+    expect(await readdir(directory)).not.toContain('WRITER.lock');
+  });
+
   it.each([
     [
       'one millisecond past',
@@ -870,8 +1001,6 @@ describe('superseded generation pruning', () => {
   const PUBLISHED_THEN_FAILED =
     'Mirror refresh published a new snapshot, which readers now serve, but a storage step after publishing failed; check free space and directory permissions.';
   const OTHER_WRITER = JSON.stringify({ pid: 999_999_998, runId: 'synthetic-second-writer' });
-  const REFRESH_UNREADABLE =
-    'REFRESH.json is unreadable, so prune cannot confirm the published mirror is ready; nothing was deleted. Remove REFRESH.json, which records only the last refresh outcome, and run prune again.';
 
   it('removes every generation CURRENT does not name and reports the bytes freed', async () => {
     await threeGenerations();
@@ -1013,33 +1142,21 @@ describe('superseded generation pruning', () => {
   );
 
   it.each([
-    ['malformed', () => writeFile(join(directory, 'REFRESH.json'), '{not json')],
-    [
-      'a directory',
-      async () => {
-        await rm(join(directory, 'REFRESH.json'));
-        await mkdir(join(directory, 'REFRESH.json'));
-      },
-    ],
+    ['malformed', (path: string) => writeFile(path, '{not json')],
+    ['a directory', (path: string) => mkdir(path)],
   ] as const)(
-    'refuses with unavailable naming REFRESH.json when it is %s, and prunes once it is removed',
+    'prunes superseded generations and leaves REFRESH.json as it found it when it is %s',
     async (_label, damage) => {
       await threeGenerations();
       const kept = await published(directory);
-      const before = await generations(directory);
-      await damage();
-      // verify never reads the refresh record, so it cannot be the way forward.
-      expect(await mirror().verifyMirror()).toMatchObject({ ok: true });
-      await expect(mirror().prune()).rejects.toMatchObject({
-        name: 'MirrorError',
-        stage: 'unavailable',
-        message: REFRESH_UNREADABLE,
-      });
-      expect(await generations(directory)).toEqual(before);
-      expect(await readdir(directory)).not.toContain('WRITER.lock');
-      await rm(join(directory, 'REFRESH.json'), { recursive: true });
-      expect(await mirror().prune()).toMatchObject({ ok: true, kept, failed: [] });
+      const record = await damageRecord(directory, damage);
+      const before = await fingerprint(record);
+      const result = await mirror().prune();
+      expect(result).toMatchObject({ ok: true, kept, skipped: [], failed: [] });
+      expect(result.removed).toHaveLength(2);
       expect(await generations(directory)).toEqual([kept]);
+      expect(await fingerprint(record)).toEqual(before);
+      expect(await readdir(directory)).not.toContain('WRITER.lock');
     },
   );
 

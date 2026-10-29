@@ -54,13 +54,20 @@ export interface SnapshotLease extends Disposable {
   release(): void;
 }
 
-/** Safe lifecycle state stored separately from published generations. */
-export interface RefreshState {
+/** Safe lifecycle record a writer stores in REFRESH.json, separately from published generations. */
+export interface RefreshRecord {
   finishedAt?: string;
   stage?: MirrorStage;
   startedAt: string;
   status: 'in_progress' | 'complete' | 'failed';
 }
+
+/**
+ * The last refresh as readers see it: a validated record, or `unreadable` when REFRESH.json exists
+ * but cannot be read, parsed, or validated. It records only the last refresh outcome, so it never
+ * decides whether the published generation is served.
+ */
+export type RefreshState = RefreshRecord | { status: 'unreadable' };
 
 /** Missing mirrors are a normal status; corrupt published generations are unavailable. */
 export interface MirrorStatus {

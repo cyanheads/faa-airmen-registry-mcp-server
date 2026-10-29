@@ -98,6 +98,9 @@ describe('FAA tool production contracts', () => {
   const limits =
     'Snapshot presence and absence do not determine current certification, operating privileges, training currency, medical fitness, or eligibility; address-withheld airmen are omitted.';
   const locationOff = 'City and ZIP access is disabled by the operator.';
+  /** The sentence a limit-50 page the size budget cut carries while another page is reachable. */
+  const budgetCut = (nextOffset: number) =>
+    `The response size budget ended this page before limit 50; more results remain, so repeat the call with offset ${nextOffset}.`;
   const quality =
     'A returned record contains an undocumented code or a malformed source date or rating; raw values are retained.';
   /** Clean people beside people whose own records carry source-quality issues; snapshot counters are nonzero. */
@@ -360,6 +363,13 @@ describe('FAA tool production contracts', () => {
         faa_airmen_check_medical_status: { uniqueId: requiredId },
         faa_airmen_list_reference: {},
       });
+      // The service checks state against the USPS codes after uppercasing; the schema stays a bare string.
+      for (const name of [
+        'faa_airmen_verify_certificate',
+        'faa_airmen_verify_remote_pilot',
+        'faa_airmen_search_instructors',
+      ])
+        expect(Object.keys(properties[name]?.state ?? {}).sort()).toEqual(['description', 'type']);
       for (const name of [
         'faa_airmen_verify_certificate',
         'faa_airmen_verify_remote_pilot',
@@ -603,6 +613,56 @@ describe('FAA tool production contracts', () => {
     expect(structured.hasMore).toBe(true);
     expect(structured.nextOffset).toBe(structured.returnedCount);
     expect(structured.returnedCount).toBeGreaterThanOrEqual(25);
+    // The cut sentence rides inside the measured response, on both surfaces.
+    expect(noticeOf(result)).toBe(budgetCut(structured.returnedCount as number));
+  });
+  it('says the size budget cut a page on all four list tools, on both surfaces, within the budget', async () => {
+    const ids = ['A9999991', 'A9999992', 'A9999993', 'A9999994', 'A9999995', 'A9999996'];
+    // Long designators on an instructor certificate and long ratings on a remote pilot certificate.
+    const designators = Object.fromEntries(
+      Array.from({ length: 15 }, (_, index) => [index + 17, `F/SYNTH-${index}-${'X'.repeat(40)}`]),
+    );
+    const ratings = Object.fromEntries(
+      Array.from({ length: 11 }, (_, index) => [index + 6, `U/SYNTH-${index}-${'X'.repeat(120)}`]),
+    );
+    const files = sourceFiles({
+      pilotBasic: ids.map((id) => basicRow(id, { 2: 'BUDGET' })),
+      nonpilotBasic: ids.map((id) => basicRow(id, { 2: 'BUDGET' })),
+      pilotCert: ids.map((id) =>
+        certificateRow(id, true, { 2: 'BUDGET', 3: 'F', 4: '', ...designators }),
+      ),
+      nonpilotCert: ids.map((id) =>
+        certificateRow(id, false, { 2: 'BUDGET', 3: 'U', 4: '', ...ratings }),
+      ),
+    });
+    await initAirmenRegistryService(
+      { mirrorDir: directory, includeLocation: false, staleAfterDays: 45, redactPii: false },
+      { fetch: sourceFetch(zipSource(files)), clock: () => new Date('2026-10-20T00:00:00Z') },
+    ).initialize();
+    const name = { lastName: 'BUDGET', firstName: 'SYNTHETIC', limit: 50 };
+    for (const [definition, input] of [
+      [tools[0], { mode: 'name', ...name }],
+      [tools[4], { mode: 'name', ...name }],
+      [tools[3], name],
+      [tools[5], { topic: 'ratings', limit: 50 }],
+    ] as const) {
+      const result = await runToolContract(definition, input);
+      const structured = result.structuredContent as {
+        returnedCount: number;
+        hasMore: boolean;
+        nextOffset: number;
+      };
+      expect({ tool: definition.name, cut: structured.returnedCount < 50 }).toEqual({
+        tool: definition.name,
+        cut: true,
+      });
+      expect(structured.hasMore).toBe(true);
+      expect(structured.nextOffset).toBe(structured.returnedCount);
+      const notice = noticeOf(result);
+      expect(notice.endsWith(budgetCut(structured.returnedCount))).toBe(true);
+      expect(notice).not.toContain('exceeds the response byte budget');
+      expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(24 * 1024);
+    }
   });
   it('puts every reachable declared failure reason and recovery on the contract path', async () => {
     init();
@@ -693,8 +753,8 @@ describe('FAA tool production contracts', () => {
       'Call faa_airmen_list_reference with topic ratings and send listed codes, bare or as level/code such as F/INSTA.',
     ] as const;
     const state = [
-      'state must be a two-letter state or territory code.',
-      'Send state as two letters, such as WA, or omit it.',
+      'state must be a two-letter USPS state, territory, or military code.',
+      'Send state as a two-letter USPS code: a state such as WA, or DC, PR, GU, VI, MP, AS, FM, MH, PW, AA, AE or AP; omit it otherwise, since airmen with foreign addresses carry no state.',
     ] as const;
     for (const [definition, input, reason, [message, hint]] of [
       [
@@ -704,6 +764,10 @@ describe('FAA tool production contracts', () => {
         state,
       ],
       [tools[3], { state: 'Washington' }, 'invalid_filter', state],
+      // Two letters that are no USPS code, on each tool that accepts state.
+      [tools[0], { mode: 'name', lastName: 'PRIVATE INPUT', state: 'zz' }, 'invalid_filter', state],
+      [tools[4], { mode: 'name', lastName: 'PRIVATE INPUT', state: 'ZZ' }, 'invalid_filter', state],
+      [tools[3], { state: 'ZZ' }, 'invalid_filter', state],
       [
         tools[0],
         { mode: 'name', lastName: 'PRIVATE INPUT'.repeat(5) },
@@ -815,7 +879,7 @@ describe('FAA tool production contracts', () => {
         error: { code: -32602, data: { reason: 'invalid_arguments' } },
       });
       expect(JSON.stringify(result.content)).toContain(
-        'uniqueId: Must be A or C plus seven digits, such as A9999999, from a faa_airmen_verify_certificate mode name result',
+        'uniqueId: Must be A or C plus seven digits, such as A9999999, from a faa_airmen_verify_certificate, faa_airmen_search_instructors, or faa_airmen_verify_remote_pilot result',
       );
     }
     await service.initialize();
@@ -941,7 +1005,9 @@ describe('FAA tool production contracts', () => {
       appliedFilters: { limit: 50 },
     });
     const reference = await runToolContract(tools[5], { topic: 'ratings', limit: 1000 });
-    expect(noticeOf(reference)).toBe(clamped);
+    // The size budget also cuts the 55 ratings short of the clamped 50.
+    const { returnedCount } = reference.structuredContent as { returnedCount: number };
+    expect(noticeOf(reference)).toBe(`${clamped} ${budgetCut(returnedCount)}`);
     expect(reference.structuredContent).toMatchObject({
       appliedFilters: { topic: 'ratings', limit: 50, offset: 0 },
     });
@@ -1241,6 +1307,23 @@ describe('FAA tool production contracts', () => {
       );
     }
   });
+  it('carries an unreadable refresh record on both surfaces of mirror_status, with the generation still ready', async () => {
+    const service = clean();
+    await service.initialize();
+    await writeFile(join(directory, 'REFRESH.json'), '{');
+    const result = await runToolContract(tools[5], { topic: 'mirror_status' });
+    parity(result);
+    const structured = result.structuredContent as {
+      entries: { guidance: string }[];
+      mirrorStatus: Record<string, unknown>;
+    };
+    expect(structured.mirrorStatus).toMatchObject({ state: 'ready', refreshState: 'unreadable' });
+    expect(structured.mirrorStatus).toHaveProperty('provenance');
+    expect(structured.mirrorStatus).not.toHaveProperty('lastRefreshFailure');
+    expect(structured.entries[0]!.guidance).toContain(
+      'REFRESH.json in the mirror directory is unreadable; it records only the last refresh outcome, so the operator can remove it, and the next refresh rewrites it.',
+    );
+  });
   it('describes SUAS from 14 CFR Part 107 on reference entries and returned records', async () => {
     const service = mixed();
     const reference = await runToolContract(tools[5], { topic: 'ratings', filter: 'suas' });
@@ -1335,6 +1418,14 @@ describe('FAA tool production contracts', () => {
     const inst: string[] = ['INST'];
     const synth: string[] = ['SYNTH-1'];
     const groundCodes: string[] = ['INST', 'ADV'];
+    const mei: string[] = ['MEI'];
+    const cfiiMei =
+      'CFII is INSTA, INSTH, INSTI, or INSTP on a flight instructor (F) certificate, and MEI is AME or ASME on F; send one call per alternative';
+    const alternatives = `${cfiiMei}.`;
+    const alternativesOnF = `${cfiiMei}, with certificateType F.`;
+    const alternativesFlight = `${cfiiMei}, with instructorType flight or both.`;
+    const oneFlightInstructor = (codes: string) =>
+      `1 flight instructor matches this search without ratingCodes, and none holds a flight instructor certificate carrying ${codes} in this snapshot.`;
     const several =
       'This Unique ID holds no single certificate carrying every requested credential; retry faa_airmen_verify_certificate in ID mode without';
     const cases = [
@@ -1368,7 +1459,7 @@ describe('FAA tool production contracts', () => {
       [
         tools[3],
         { state: 'WA', instructorType: 'flight', ratingCodes: groundCodes },
-        `Check the rating codes with faa_airmen_list_reference topic ratings; ${sameCertificate}`,
+        `${oneFlightInstructor('every requested code')} Check the rating codes with faa_airmen_list_reference topic ratings; ${sameCertificate}`,
       ],
       [tools[0], { mode: 'id', uniqueId: 'A0000001' }, idAbsent],
       [tools[0], { mode: 'id', uniqueId: 'A0000001', certificateType: 'P' }, idAbsent],
@@ -1417,11 +1508,41 @@ describe('FAA tool production contracts', () => {
         { mode: 'name', lastName: 'FIXTURE', firstName: 'GROUND' },
         `No candidate matching the name holds a remote pilot (U) certificate; use faa_airmen_verify_certificate in name mode to check the name and other certificates. ${fewer}`,
       ],
-      [tools[3], { state: 'WA', instructorType: 'flight', ratingCodes: inst }, ratingsRoute],
       [
         tools[3],
-        { state: 'WA', firstName: 'SYNTHETIC', instructorType: 'flight', ratingCodes: inst },
-        `${ratingsRoute} ${fewer}`,
+        { state: 'WA', instructorType: 'flight', ratingCodes: inst },
+        `${oneFlightInstructor('the requested code')} ${ratingsRoute}`,
+      ],
+      [
+        tools[3],
+        { state: 'WA', firstName: 'SYNTHETIC', instructorType: 'flight', ratingCodes: mei },
+        `${oneFlightInstructor('the requested code')} ${ratingsRoute} ${alternatives}`,
+      ],
+      [
+        tools[3],
+        { lastName: 'FIXTURE', firstName: 'GROUND', instructorType: 'flight', ratingCodes: mei },
+        `No flight instructor matches this search even without ratingCodes. ${fewer}`,
+      ],
+      [
+        tools[3],
+        { lastName: 'FIXTURE', firstName: 'GROUND', instructorType: 'ground', ratingCodes: mei },
+        `1 ground instructor matches this search without ratingCodes, and none holds a ground instructor certificate carrying the requested code in this snapshot. ${ratingsRoute} ${alternativesFlight}`,
+      ],
+      [tools[3], { ratingCodes: mei }, `${ratingsRoute} ${alternatives}`],
+      [
+        tools[0],
+        { mode: 'id', uniqueId: 'A9999999', ratingCodes: ['F/INSTH'] },
+        `This Unique ID holds no certificate matching the requested rating codes; retry faa_airmen_verify_certificate in ID mode without ratingCodes to read the person's other certificates. ${ratingsRoute} ${alternativesOnF}`,
+      ],
+      [
+        tools[0],
+        { mode: 'name', lastName: 'FIXTURE', ratingCodes: ['INSTH'] },
+        `2 people match this name search without ratingCodes, and none holds a certificate matching the requested rating codes in this snapshot. ${ratingsRoute} ${alternativesOnF}`,
+      ],
+      [
+        tools[0],
+        { mode: 'name', lastName: 'FIXTURE', certificateType: 'F', ratingCodes: ['INSTH'] },
+        `2 people match this name search without certificateType or ratingCodes, and none holds a single certificate carrying every requested credential in this snapshot. ${ratingsRoute} ${alternatives}`,
       ],
       [tools[3], { lastName: 'ABSENT' }, identifiers],
     ] as const;
@@ -1474,11 +1595,17 @@ describe('FAA tool production contracts', () => {
         provenance: null,
       });
   });
-  it('names the CFII and MEI codes once in the schema and on the ten relevant rating entries', async () => {
+  it('names the CFII and MEI codes once in each ratingCodes schema and on the ten relevant rating entries', async () => {
     init();
-    expect(tools[3].input.shape.ratingCodes.description).toContain(
-      'CFII is INSTA, INSTH, INSTI, or INSTP on a flight (F) certificate; MEI is AME or ASME on F; INST, ADV, and BASIC occur only on ground (G) certificates.',
-    );
+    const mapping =
+      'CFII is INSTA, INSTH, INSTI, or INSTP on a flight instructor (F) certificate; MEI is AME or ASME on F; INST, ADV, and BASIC occur only on ground instructor (G) certificates.';
+    for (const definition of [tools[0], tools[3]]) {
+      const description = definition.input.shape.ratingCodes.description ?? '';
+      expect({ tool: definition.name, mapping: description.split(mapping).length - 1 }).toEqual({
+        tool: definition.name,
+        mapping: 1,
+      });
+    }
     const entries: { code: string; guidance?: string; sourceUrls: string[] }[] = [];
     for (let offset: number | null = 0; offset !== null; ) {
       const page = await runToolContract(tools[5], { topic: 'ratings', limit: 50, offset });
@@ -1515,6 +1642,43 @@ describe('FAA tool production contracts', () => {
         expect(entry.sourceUrls).not.toContain(part61);
       }
     }
+  });
+  it('names the pilot-file scope of type ratings and every tool whose results carry a Unique ID', () => {
+    const from =
+      'from a faa_airmen_verify_certificate, faa_airmen_search_instructors, or faa_airmen_verify_remote_pilot result';
+    expect(tools[1].description).toBe(
+      `Read one FAA airman's certificates from the FAA pilot file, by Unique ID: pilot, flight instructor, authorized aircraft instructor, remote pilot, and flight engineer, each with every aircraft type, category/class, and instrument rating. Ground instructor, mechanic, and other non-pilot certificates are excluded; faa_airmen_verify_certificate mode id returns every certificate. Get the ID ${from}. Ratings retain their source certificate type and level and do not establish current operating privileges.`,
+    );
+    expect(tools[2].description).toBe(
+      `Read the FAA snapshot's informational medical class, medical dates, and BasicMed dates for one airman Unique ID. These fields are not authoritative medical certification or fitness determinations. Get the ID ${from}. Every call is rejected while the operator's personal-data redaction is on (the default).`,
+    );
+    const id = 'A or C plus seven digits, for example A9999999; not a certificate number.';
+    for (const definition of [tools[1], tools[2]])
+      expect(definition.input.shape.uniqueId.description).toBe(
+        `Opaque FAA Unique ID ${from}, ${id}`,
+      );
+    for (const definition of [tools[0], tools[4]])
+      expect(definition.input.shape.uniqueId.description).toBe(
+        `Opaque FAA Unique ID ${from}, ${id} Trimmed and uppercased.`,
+      );
+  });
+  it('reads type ratings and medical fields by the Unique ID an instructor or remote pilot result carries', async () => {
+    await clean().initialize();
+    const instructor = (await runToolContract(tools[3], { state: 'WA', instructorType: 'flight' }))
+      .structuredContent as { matches: { airman: { uniqueId: string } }[] };
+    const remote = (await runToolContract(tools[4], { mode: 'name', lastName: 'FIXTURE' }))
+      .structuredContent as { matches: { airman: { uniqueId: string } }[] };
+    const ids = [...instructor.matches, ...remote.matches].map((match) => match.airman.uniqueId);
+    expect(ids).toEqual(['A9999999', 'A9999999']);
+    for (const uniqueId of ids)
+      for (const definition of [tools[1], tools[2]]) {
+        const result = await runToolContract(definition, { uniqueId });
+        parity(result);
+        expect(result.structuredContent).toMatchObject({
+          found: true,
+          appliedFilters: { uniqueId },
+        });
+      }
   });
   const redactedOn = 'while personal-data redaction (FAA_AIRMEN_REDACT_PII) is on.';
   const redactionNotice =
@@ -1659,8 +1823,8 @@ describe('FAA tool production contracts', () => {
     };
     const uniqueId = {
       message: 'mode id requires uniqueId.',
-      off: 'Send the uniqueId from a faa_airmen_verify_certificate mode name result, or search with mode name and lastName.',
-      on: 'Send the uniqueId from a faa_airmen_verify_certificate mode name result, or search with mode name and both lastName and firstName.',
+      off: 'Send the uniqueId from a faa_airmen_verify_certificate, faa_airmen_search_instructors, or faa_airmen_verify_remote_pilot result, or search with mode name and lastName.',
+      on: 'Send the uniqueId from a faa_airmen_verify_certificate, faa_airmen_search_instructors, or faa_airmen_verify_remote_pilot result, or search with mode name and both lastName and firstName.',
     };
     const firstName = {
       message: 'firstName must be at most 60 characters with no control or format characters.',
@@ -1673,7 +1837,8 @@ describe('FAA tool production contracts', () => {
       'While personal-data redaction is on, a name search also needs both lastName and firstName, with nameMatch words or exact.';
     const typeHint =
       'Call faa_airmen_list_reference with topic certificate_types and send a listed code or description, or omit certificateType together with any certificateLevel.';
-    const stateHint = 'Send state as two letters, such as WA, or omit it.';
+    const stateHint =
+      'Send state as a two-letter USPS code: a state such as WA, or DC, PR, GU, VI, MP, AS, FM, MH, PW, AA, AE or AP; omit it otherwise, since airmen with foreign addresses carry no state.';
     const certificateType = {
       message:
         'certificateType must be one certificate type letter, a certificate_types description, or CFI.',
@@ -1681,7 +1846,7 @@ describe('FAA tool production contracts', () => {
       on: `${typeHint} ${namesToo}`,
     };
     const state = {
-      message: 'state must be a two-letter state or territory code.',
+      message: 'state must be a two-letter USPS state, territory, or military code.',
       off: stateHint,
       on: `${stateHint} ${namesToo}`,
     };

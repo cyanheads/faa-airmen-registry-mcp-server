@@ -8,10 +8,10 @@ import { getAirmenRegistryService } from '@/services/airmen/airmen-registry-serv
 import { formatResult, singleTrailer } from '../render.js';
 import { airmanSchema, certificateSchema, idInput, singleEnrichment } from '../schemas.js';
 
-/** Read all source aircraft type, category/class, and instrument ratings for one FAA airman Unique ID. Get the ID from faa_airmen_verify_certificate. Ratings retain their source certificate type and level and do not establish current operating privileges. */
+/** Read one FAA airman's certificates from the FAA pilot file, by Unique ID: pilot, flight instructor, authorized aircraft instructor, remote pilot, and flight engineer, each with every aircraft type, category/class, and instrument rating. Ground instructor, mechanic, and other non-pilot certificates are excluded; faa_airmen_verify_certificate mode id returns every certificate. Get the ID from a faa_airmen_verify_certificate, faa_airmen_search_instructors, or faa_airmen_verify_remote_pilot result. Ratings retain their source certificate type and level and do not establish current operating privileges. */
 export const getTypeRatingsTool = tool('faa_airmen_get_type_ratings', {
   description:
-    'Read all source aircraft type, category/class, and instrument ratings for one FAA airman Unique ID. Get the ID from faa_airmen_verify_certificate. Ratings retain their source certificate type and level and do not establish current operating privileges.',
+    "Read one FAA airman's certificates from the FAA pilot file, by Unique ID: pilot, flight instructor, authorized aircraft instructor, remote pilot, and flight engineer, each with every aircraft type, category/class, and instrument rating. Ground instructor, mechanic, and other non-pilot certificates are excluded; faa_airmen_verify_certificate mode id returns every certificate. Get the ID from a faa_airmen_verify_certificate, faa_airmen_search_instructors, or faa_airmen_verify_remote_pilot result. Ratings retain their source certificate type and level and do not establish current operating privileges.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: idInput,
   output: z.object({

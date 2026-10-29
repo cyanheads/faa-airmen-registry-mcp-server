@@ -5,6 +5,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getAirmenRegistryService } from '@/services/airmen/airmen-registry-service.js';
+import { INSTRUCTOR_RATING_MAP } from '@/services/airmen/reference.js';
 import { formatResult, listTrailer } from '../render.js';
 import {
   airmanSchema,
@@ -34,7 +35,7 @@ export const searchInstructorsTool = tool('faa_airmen_search_instructors', {
         .max(11)
         .optional()
         .describe(
-          'One to eleven codes, repeats collapsed; every code must occur on the same qualifying certificate, never across certificates. CFII is INSTA, INSTH, INSTI, or INSTP on a flight (F) certificate; MEI is AME or ASME on F; INST, ADV, and BASIC occur only on ground (G) certificates.',
+          `One to eleven codes, repeats collapsed; every code must occur on the same qualifying certificate, never across certificates. ${INSTRUCTOR_RATING_MAP}`,
         ),
       ...pagingInput,
     })

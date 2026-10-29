@@ -8,10 +8,10 @@ import { getAirmenRegistryService } from '@/services/airmen/airmen-registry-serv
 import { formatResult, singleTrailer } from '../render.js';
 import { airmanSchema, idInput, medicalRecordSchema, singleEnrichment } from '../schemas.js';
 
-/** Read the FAA snapshot's informational medical class, medical dates, and BasicMed dates for one airman Unique ID. These fields are not authoritative medical certification or fitness determinations. Get the ID from faa_airmen_verify_certificate. Every call is rejected while the operator's personal-data redaction is on (the default). */
+/** Read the FAA snapshot's informational medical class, medical dates, and BasicMed dates for one airman Unique ID. These fields are not authoritative medical certification or fitness determinations. Get the ID from a faa_airmen_verify_certificate, faa_airmen_search_instructors, or faa_airmen_verify_remote_pilot result. Every call is rejected while the operator's personal-data redaction is on (the default). */
 export const checkMedicalStatusTool = tool('faa_airmen_check_medical_status', {
   description:
-    "Read the FAA snapshot's informational medical class, medical dates, and BasicMed dates for one airman Unique ID. These fields are not authoritative medical certification or fitness determinations. Get the ID from faa_airmen_verify_certificate. Every call is rejected while the operator's personal-data redaction is on (the default).",
+    "Read the FAA snapshot's informational medical class, medical dates, and BasicMed dates for one airman Unique ID. These fields are not authoritative medical certification or fitness determinations. Get the ID from a faa_airmen_verify_certificate, faa_airmen_search_instructors, or faa_airmen_verify_remote_pilot result. Every call is rejected while the operator's personal-data redaction is on (the default).",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: idInput,
   output: z.object({

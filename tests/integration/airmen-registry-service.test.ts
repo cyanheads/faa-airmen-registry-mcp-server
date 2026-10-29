@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { REFRESH_DEADLINE_MS } from '../../src/services/airmen/airmen-mirror.js';
 import { AirmenRegistryService } from '../../src/services/airmen/airmen-registry-service.js';
 import { REFERENCE_TOPICS, type VerifyInput } from '../../src/services/airmen/contracts.js';
+import { STATE_CODES } from '../../src/services/airmen/reference.js';
 import type { SnapshotLease } from '../../src/services/airmen/types.js';
 import {
   basicRow,
@@ -272,6 +273,21 @@ function credentialedSource() {
     }),
   );
 }
+/** The USPS codes the October 2026 snapshot's BASIC records carry: 50 states, DC, territories, freely associated states, and military. */
+const uspsCodes = [
+  ...'AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO'.split(' '),
+  ...'MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY'.split(' '),
+  ...'DC PR GU VI MP AS FM MH PW AA AE AP'.split(' '),
+];
+/** A state outside the USPS codes, as every tool that accepts state rejects it. */
+const stateRule = {
+  reason: 'invalid_filter',
+  message: 'state must be a two-letter USPS state, territory, or military code.',
+  hint: 'Send state as a two-letter USPS code: a state such as WA, or DC, PR, GU, VI, MP, AS, FM, MH, PW, AA, AE or AP; omit it otherwise, since airmen with foreign addresses carry no state.',
+};
+/** The sentence a page the size budget cut short of `limit` carries while another page is reachable. */
+const budgetCut = (limit: number, nextOffset: number) =>
+  `The response size budget ended this page before limit ${limit}; more results remain, so repeat the call with offset ${nextOffset}.`;
 /** Notice sentences as callers read them. */
 const limits =
   'Snapshot presence and absence do not determine current certification, operating privileges, training currency, medical fitness, or eligibility; address-withheld airmen are omitted.';
@@ -298,6 +314,22 @@ const typeRatingsRule =
   'Check the type ratings with faa_airmen_list_reference topic type_ratings; all must occur on the same certificate.';
 const bothRule =
   'Check the rating codes with faa_airmen_list_reference topic ratings and the type ratings with faa_airmen_list_reference topic type_ratings; all must occur on the same certificate.';
+/**
+ * The sentence that follows the ratings route when the sent codes name CFII, MEI, or one of their
+ * codes, on a call whose retries already land on F certificates; the other two forms name the
+ * filter that confines each retry to F (a bare CFII code also matches a pilot certificate's
+ * instrument rating, and a ground instructor certificate carries none of the alternatives).
+ */
+const cfiiMei =
+  'CFII is INSTA, INSTH, INSTI, or INSTP on a flight instructor (F) certificate, and MEI is AME or ASME on F; send one call per alternative';
+const alternatives = `${cfiiMei}.`;
+const alternativesOnF = `${cfiiMei}, with certificateType F.`;
+const alternativesFlight = `${cfiiMei}, with instructorType flight or both.`;
+/** An instructor zero result's count of the people its search matches without ratingCodes. */
+const instructorsCounted = (people: string, instructor: string, codes: string) =>
+  `${people} this search without ratingCodes, and none holds a ${instructor} certificate carrying ${codes} in this snapshot.`;
+const noInstructor = (instructor: string) =>
+  `No ${instructor} matches this search even without ratingCodes.`;
 
 describe('offline FAA registry queries', () => {
   let directory: string;
@@ -423,11 +455,7 @@ describe('offline FAA registry queries', () => {
       'ratingCodes must be 1–11 codes, each 1–30 letters, digits, spaces, or hyphens, optionally after a one-letter level and a slash.',
       'Call faa_airmen_list_reference with topic ratings and send listed codes, bare or as level/code such as F/INSTA.',
     ] as const;
-    const state = [
-      'invalid_filter',
-      'state must be a two-letter state or territory code.',
-      'Send state as two letters, such as WA, or omit it.',
-    ] as const;
+    const state = [stateRule.reason, stateRule.message, stateRule.hint] as const;
     const typeRatings = [
       'invalid_filter',
       'typeRatings must be 1–11 designators, each 1–30 letters, digits, spaces, or hyphens, optionally after a one-letter level and a slash.',
@@ -563,7 +591,7 @@ describe('offline FAA registry queries', () => {
         [
           'invalid_identity',
           'uniqueId must be A or C plus seven digits, such as A9999999.',
-          'Copy uniqueId from a faa_airmen_verify_certificate mode name result; it is not a certificate number.',
+          'Copy uniqueId from a faa_airmen_verify_certificate, faa_airmen_search_instructors, or faa_airmen_verify_remote_pilot result; it is not a certificate number.',
         ],
       ],
       [
@@ -616,12 +644,12 @@ describe('offline FAA registry queries', () => {
       [
         { mode: 'id', uniqueId: ' 　 ' },
         'mode id requires uniqueId.',
-        'Send the uniqueId from a faa_airmen_verify_certificate mode name result, or search with mode name and lastName.',
+        'Send the uniqueId from a faa_airmen_verify_certificate, faa_airmen_search_instructors, or faa_airmen_verify_remote_pilot result, or search with mode name and lastName.',
       ],
       [
         { mode: 'id', uniqueId: 'PRIVATE' },
         'uniqueId must be A or C plus seven digits, such as A9999999.',
-        'Copy uniqueId from a faa_airmen_verify_certificate mode name result; it is not a certificate number.',
+        'Copy uniqueId from a faa_airmen_verify_certificate, faa_airmen_search_instructors, or faa_airmen_verify_remote_pilot result; it is not a certificate number.',
       ],
       [
         { mode: 'name', state: 'PRIVATE' },
@@ -658,11 +686,7 @@ describe('offline FAA registry queries', () => {
         'invalid_identity',
         'uniqueId must be A or C plus seven digits, such as A9999999.',
       ],
-      [
-        { mode: 'name', lastName: 'fixture', state: 'W​A' },
-        'invalid_filter',
-        'state must be a two-letter state or territory code.',
-      ],
+      [{ mode: 'name', lastName: 'fixture', state: 'W​A' }, 'invalid_filter', stateRule.message],
     ] as const)
       expect(await rejection(() => registry.verifyCertificates(input))).toMatchObject({
         reason,
@@ -733,6 +757,79 @@ describe('offline FAA registry queries', () => {
         offset: 0,
       });
     }
+  });
+
+  it('accepts each of the 62 USPS codes as state in any case and padded, and finds its person', async () => {
+    const people = uspsCodes.map((code, index) => ({
+      code,
+      id: `A62000${String(index).padStart(2, '0')}`,
+    }));
+    const registry = service(
+      false,
+      zipSource(
+        sourceFiles({
+          pilotBasic: people.map(({ code, id }) => person(id, 'SYNTHETIC', 'STATES', { 6: code })),
+          pilotCert: people.map(({ id }) => certificateRow(id, true, { 2: 'STATES' })),
+        }),
+      ),
+    );
+    await registry.initialize();
+    expect(uspsCodes).toHaveLength(62);
+    // The rejection cases name only a few outside codes; an extra packaged code would pass them.
+    expect([...STATE_CODES].sort()).toEqual([...uspsCodes].sort());
+    for (const { code, id } of people)
+      for (const sent of [code, ` ${code.toLowerCase()} `]) {
+        const result = await registry.verifyCertificates({
+          mode: 'name',
+          lastName: 'states',
+          state: sent,
+        });
+        expect({
+          sent,
+          ids: personIds(result),
+          state: result.enrichment.appliedFilters.state,
+        }).toEqual({ sent, ids: [id], state: code });
+      }
+    // U+FB02 uppercases to FL, which is a listed code.
+    const ligature = await registry.verifyCertificates({
+      mode: 'name',
+      lastName: 'states',
+      state: 'ﬂ',
+    });
+    expect(ligature.enrichment.appliedFilters.state).toBe('FL');
+    expect(personIds(ligature)).toEqual([people.find(({ code }) => code === 'FL')!.id]);
+  });
+
+  it('rejects a nonblank state outside the USPS codes on every tool that accepts state, after the location gate and mode checks', async () => {
+    const registry = await populated();
+    // ß uppercases to SS, two letters that are no USPS code.
+    for (const state of ['ZZ', ' zz ', 'US', 'GB', 'ß', 'XX'])
+      expect(
+        await rejection(() =>
+          registry.verifyCertificates({ mode: 'name', lastName: 'fixture', state }),
+        ),
+        state,
+      ).toEqual(stateRule);
+    for (const run of [
+      () => registry.verifyRemotePilot({ mode: 'name', lastName: 'fixture', state: 'ZZ' }),
+      () => registry.searchInstructors({ state: 'ZZ' }),
+    ]) {
+      const error = await rejection(run);
+      expect(error).toEqual(stateRule);
+      expect(JSON.stringify(error)).not.toContain('ZZ');
+    }
+    expect(
+      await rejection(() =>
+        registry.verifyCertificates({ mode: 'id', uniqueId: 'A9999999', state: 'ZZ' }),
+      ),
+    ).toEqual({ reason: 'invalid_identity', message: 'mode id forbids state.', hint: idOnly });
+    expect(
+      (
+        await rejection(() =>
+          registry.verifyCertificates({ mode: 'name', lastName: 'x', state: 'ZZ', city: 'X' }),
+        )
+      ).reason,
+    ).toBe('location_access_disabled');
   });
 
   it('keeps the one-to-one certificate type aliases and unknown letters', async () => {
@@ -1023,10 +1120,14 @@ describe('offline FAA registry queries', () => {
     const reference = await registry.listReference({ topic: 'ratings', limit: 100 });
     const referenceFifty = await registry.listReference({ topic: 'ratings', limit: 50 });
     expect(reference.data).toEqual(referenceFifty.data);
+    // The size budget cuts the 55 ratings short of 50, so both pages also carry the cut sentence.
+    expect(referenceFifty.enrichment.notice).toBe(
+      budgetCut(50, referenceFifty.enrichment.returnedCount),
+    );
     expect(reference.enrichment).toEqual({
       ...referenceFifty.enrichment,
       appliedFilters: { ...referenceFifty.enrichment.appliedFilters, limit: 50 },
-      notice: clamped,
+      notice: `${clamped} ${referenceFifty.enrichment.notice}`,
     });
     const walked: string[] = [];
     for (let offset: number | null = 0; offset !== null; ) {
@@ -1036,6 +1137,86 @@ describe('offline FAA registry queries', () => {
     }
     expect(walked).toHaveLength(55);
     expect(new Set(walked).size).toBe(55);
+  });
+
+  it('says the size budget cut a page short of limit only when another page is reachable', async () => {
+    // Fifteen long type ratings per person let the budget fit two of the five people per page.
+    const ids = ['A4000001', 'A4000002', 'A4000003', 'A4000004', 'A4000005'];
+    const long = Object.fromEntries(
+      Array.from({ length: 15 }, (_, index) => [index + 17, `P/SYNTH-${index}-${'X'.repeat(40)}`]),
+    );
+    // Sixty short designators: a clamped type_ratings page fits all 50 within the budget.
+    const short = Object.fromEntries(
+      Array.from({ length: 60 }, (_, index) => [index + 17, `P/T-${index}`]),
+    );
+    const registry = service(
+      false,
+      zipSource(
+        sourceFiles({
+          pilotBasic: [
+            ...ids.map((id) => person(id, 'SYNTHETIC', 'BUDGET')),
+            person('A4000099', 'SYNTHETIC', 'DESIGNATORS'),
+          ],
+          pilotCert: [
+            ...ids.map((id) => cert(id, 'SYNTHETIC', 'BUDGET', true, long)),
+            cert('A4000099', 'SYNTHETIC', 'DESIGNATORS', true, short),
+          ],
+        }),
+      ),
+    );
+    await registry.initialize();
+    const search = (paging: { limit?: number; offset?: number }) =>
+      registry.verifyCertificates({ mode: 'name', lastName: 'BUDGET', ...paging });
+    const cut = await search({ limit: 50 });
+    expect(cut.enrichment).toMatchObject({
+      totalCount: 5,
+      returnedCount: 2,
+      hasMore: true,
+      nextOffset: 2,
+      atPagingCap: false,
+    });
+    expect(cut.enrichment.notice).toBe(`${limits} ${locationOff} ${budgetCut(50, 2)}`);
+    // A later page cut again names its own continuation.
+    const second = await search({ limit: 50, offset: 2 });
+    expect(second.enrichment).toMatchObject({ returnedCount: 2, nextOffset: 4 });
+    expect(second.enrichment.notice).toBe(`${limits} ${locationOff} ${budgetCut(50, 4)}`);
+    // A clamped limit keeps both sentences: the clamp, then the cut.
+    const clampedCut = await search({ limit: 100 });
+    expect(personIds(clampedCut)).toEqual(personIds(cut));
+    expect(clampedCut.enrichment.notice).toBe(
+      `${limits} ${locationOff} A limit above 50 returns at most 50. ${budgetCut(50, 2)}`,
+    );
+    // A page holding exactly limit entries, with more to come, was not cut.
+    const full = await search({ limit: 2 });
+    expect(full.enrichment).toMatchObject({ returnedCount: 2, hasMore: true, nextOffset: 2 });
+    expect(full.enrichment.notice).toBe(`${limits} ${locationOff}`);
+    // The last page is short because the results end, not because of the budget.
+    const last = await search({ limit: 50, offset: 3 });
+    expect(last.enrichment).toMatchObject({
+      returnedCount: 2,
+      hasMore: false,
+      nextOffset: null,
+    });
+    expect(last.enrichment.notice).toBe(`${limits} ${locationOff}`);
+    // A clamped page that returns all 50 entries was not cut either.
+    const clampedFull = await registry.listReference({ topic: 'type_ratings', limit: 100 });
+    expect(clampedFull.enrichment).toMatchObject({
+      totalCount: 75,
+      returnedCount: 50,
+      hasMore: true,
+      nextOffset: 50,
+    });
+    expect(clampedFull.enrichment.notice).toBe(
+      `${limits} ${locationOff} A limit above 50 returns at most 50.`,
+    );
+    // A static reference page carries the sentence as its whole notice.
+    const ratings = await registry.listReference({ topic: 'ratings', limit: 50 });
+    expect(ratings.enrichment.returnedCount).toBeLessThan(50);
+    expect(ratings.enrichment).toMatchObject({
+      hasMore: true,
+      nextOffset: ratings.enrichment.returnedCount,
+    });
+    expect(ratings.enrichment.notice).toBe(budgetCut(50, ratings.enrichment.returnedCount));
   });
 
   it.each(['exact', 'prefix', 'words'] as const)(
@@ -1657,6 +1838,51 @@ describe('offline FAA registry queries', () => {
     },
   );
 
+  it('serves lookups over an unreadable refresh record with the notice a missing record gets, leaving it and WRITER.lock alone', async () => {
+    const registry = await populated();
+    await rm(join(directory, 'REFRESH.json'));
+    const baseline = await registry.verifyCertificates({ mode: 'id', uniqueId: 'A9999999' });
+    await writeFile(join(directory, 'REFRESH.json'), '{');
+    await writeFile(join(directory, 'WRITER.lock'), 'synthetic-dead-owner');
+    const lookup = await registry.verifyCertificates({ mode: 'id', uniqueId: 'A9999999' });
+    expect(lookup.data.matches).toHaveLength(1);
+    expect(lookup.enrichment.notice).toBe(baseline.enrichment.notice);
+    expect(await registry.mirror.verifyMirror()).toMatchObject({ ok: true });
+    expect(await readFile(join(directory, 'REFRESH.json'), 'utf8')).toBe('{');
+    expect(await readFile(join(directory, 'WRITER.lock'), 'utf8')).toBe('synthetic-dead-owner');
+  });
+
+  const unreadableGuidance =
+    'Refresh record: REFRESH.json in the mirror directory is unreadable; it records only the last refresh outcome, so the operator can remove it, and the next refresh rewrites it.';
+  it('reports a serving mirror as ready with an unreadable refresh record, naming REFRESH.json and its removal', async () => {
+    const registry = await populated();
+    const generationId = (await registry.mirror.status()).provenance?.generationId;
+    await writeFile(join(directory, 'REFRESH.json'), '{');
+    const reference = await registry.listReference({ topic: 'mirror_status' });
+    expect(reference.data.mirrorStatus).toEqual({
+      state: 'ready',
+      refreshState: 'unreadable',
+      provenance: expect.objectContaining({ generationId }),
+    });
+    expect(reference.data.entries[0]!.guidance).toBe(
+      `Mirror state: ready. ${unreadableGuidance} Initialize with faa-airmen-registry-mirror init; refresh with faa-airmen-registry-mirror refresh. Location import policy: disabled. Personal-data redaction: off.`,
+    );
+    expect(reference.enrichment.provenance).toMatchObject({ generationId });
+    expect(await readFile(join(directory, 'REFRESH.json'), 'utf8')).toBe('{');
+  });
+
+  it('reports missing with the unreadable refresh record when no generation is published', async () => {
+    const registry = service();
+    await writeFile(join(directory, 'REFRESH.json'), '{');
+    const reference = await registry.listReference({ topic: 'mirror_status' });
+    expect(reference.data.mirrorStatus).toEqual({ state: 'missing', refreshState: 'unreadable' });
+    expect(reference.data.entries[0]!.guidance).toContain(unreadableGuidance);
+    await rm(join(directory, 'REFRESH.json'));
+    const absent = await registry.listReference({ topic: 'mirror_status' });
+    expect(absent.data.mirrorStatus).toEqual({ state: 'missing', refreshState: 'idle' });
+    expect(absent.data.entries[0]!.guidance).not.toContain('REFRESH.json');
+  });
+
   it('returns classified errors without echoing personal input or local paths', async () => {
     const registry = service();
     const cases: [() => unknown, string][] = [
@@ -1708,10 +1934,19 @@ describe('offline FAA registry queries', () => {
 
   it('reports the offset cap using actual remaining people', async () => {
     const ids = Array.from({ length: 10003 }, (_, index) => `A${String(index).padStart(7, '0')}`);
+    // The two people at offsets 10000 and 10001 each fit the size budget alone, but not together.
+    const long = Object.fromEntries(
+      Array.from({ length: 30 }, (_, index) => [index + 18, `P/SYNTH-${index}-${'X'.repeat(40)}`]),
+    );
     const bytes = zipSource(
       sourceFiles({
         pilotBasic: ids.map((id) => basicRow(id)),
-        pilotCert: ids.map((id) => certificateRow(id, true, { 17: 'P/SYNTH-1' })),
+        pilotCert: ids.map((id, index) =>
+          certificateRow(id, true, {
+            17: 'P/SYNTH-1',
+            ...(index >= 10000 && index < 10002 && long),
+          }),
+        ),
       }),
     );
     const registry = service(false, bytes);
@@ -1750,6 +1985,20 @@ describe('offline FAA registry queries', () => {
       appliedFilters: { nameMatch: 'words' },
     });
     expect(result.enrichment.notice).toBe(capped);
+    // A page the budget cut at the cap carries the cap sentence alone: no page follows to continue.
+    const cutAtCap = await registry.verifyCertificates({
+      mode: 'name',
+      lastName: 'FIXTURE',
+      offset: 10000,
+      limit: 2,
+    });
+    expect(cutAtCap.enrichment).toMatchObject({
+      returnedCount: 1,
+      hasMore: false,
+      nextOffset: null,
+      atPagingCap: true,
+    });
+    expect(cutAtCap.enrichment.notice).toBe(capped);
   });
 
   it('returns complete oversized people and advances continuations by the actual returned count', async () => {
@@ -1786,6 +2035,21 @@ describe('offline FAA registry queries', () => {
       nextOffset: 1,
     });
     expect(first.enrichment.notice).toContain('all source credentials are retained');
+    // The budget cut the page to one oversized record: both sentences, the cut first.
+    const oversized =
+      'One complete record exceeds the response byte budget; all source credentials are retained.';
+    expect(first.enrichment.notice).toBe(
+      `${limits} ${locationOff} ${budgetCut(50, 1)} ${oversized}`,
+    );
+    // A limit of 1 returns a full page: the record is oversized, but nothing was cut.
+    const single = await registry.verifyCertificates({
+      mode: 'name',
+      lastName: 'FIXTURE',
+      limit: 1,
+    });
+    expect(personIds(single)).toEqual(personIds(first));
+    expect(single.enrichment).toMatchObject({ returnedCount: 1, hasMore: true, nextOffset: 1 });
+    expect(single.enrichment.notice).toBe(`${limits} ${locationOff} ${oversized}`);
     const next = await registry.verifyCertificates({
       mode: 'name',
       lastName: 'FIXTURE',
@@ -1808,7 +2072,9 @@ describe('offline FAA registry queries', () => {
     await registry.initialize();
     const ratings = await registry.getRatings({ uniqueId: 'C9999998' });
     expect(ratings.data).toMatchObject({ found: true, certificates: [] });
-    expect(ratings.enrichment.notice).toContain('No pilot-family certificate');
+    expect(ratings.enrichment.notice).toContain(
+      'No pilot-family certificate was reported; faa_airmen_verify_certificate mode id returns every certificate, non-pilot ones included.',
+    );
     const result = await registry.verifyCertificates({
       mode: 'id',
       uniqueId: 'C9999998',
@@ -2197,6 +2463,11 @@ describe('zero-result notice routing by the filters sent', () => {
         ),
         levelRoute,
         bothRule,
+        /**
+         * INSTA is a CFII code, so the alternatives follow the shared ratings sentence; the call
+         * sent type P, so each retry must switch to F.
+         */
+        alternativesOnF,
       ],
     ],
     [
@@ -2272,30 +2543,163 @@ describe('zero-result notice routing by the filters sent', () => {
       ['No person matches this name search even without ratingCodes or typeRatings.', fewer],
     ],
     [
-      'instructors by state and ratingCodes',
-      (s) => s.searchInstructors({ state: 'WA', ratingCodes: ['ZZ-9'] }),
-      [ratingsRoute],
+      'verify name mode with a CFII code, naming the alternatives on F after the ratings route',
+      (s) => s.verifyCertificates({ ...name, firstName: 'alpha', ratingCodes: ['INSTP'] }),
+      [
+        counted(
+          '1 person matches',
+          'ratingCodes',
+          'certificate matching the requested rating codes',
+        ),
+        ratingsRoute,
+        alternativesOnF,
+      ],
     ],
     [
-      'instructors by ratingCodes alone',
+      'verify ID mode with the shorthand cfii, naming the alternatives on F',
+      (s) => s.verifyCertificates({ mode: 'id', uniqueId: 'A9999001', ratingCodes: ['cfii'] }),
+      [
+        idHolds('certificate matching the requested rating codes', 'ratingCodes'),
+        ratingsRoute,
+        alternativesOnF,
+      ],
+    ],
+    [
+      'verify ID mode with a level-qualified CFII code, still naming certificateType F for the bare alternatives',
+      (s) => s.verifyCertificates({ mode: 'id', uniqueId: 'A9999001', ratingCodes: ['F/INSTH'] }),
+      [
+        idHolds('certificate matching the requested rating codes', 'ratingCodes'),
+        ratingsRoute,
+        alternativesOnF,
+      ],
+    ],
+    [
+      'verify ID mode already confined to F by certificateType CFI, naming the alternatives alone',
+      (s) =>
+        s.verifyCertificates({
+          mode: 'id',
+          uniqueId: 'A9999001',
+          certificateType: 'cfi',
+          ratingCodes: ['INSTH'],
+        }),
+      [idHolds(every, 'certificateType or ratingCodes'), ratingsRoute, alternatives],
+    ],
+    [
+      'verify ID mode with ASE, which names neither alternative',
+      (s) => s.verifyCertificates({ mode: 'id', uniqueId: 'A9999001', ratingCodes: ['ASE'] }),
+      [idHolds('certificate matching the requested rating codes', 'ratingCodes'), ratingsRoute],
+    ],
+    // An instructor search with a name or location filter counts the instructors it matches without its codes.
+    [
+      'instructors by state and ratingCodes',
+      (s) => s.searchInstructors({ state: 'WA', ratingCodes: ['ZZ-9'] }),
+      [
+        instructorsCounted(
+          '2 flight or ground instructors match',
+          'flight or ground instructor',
+          'the requested code',
+        ),
+        ratingsRoute,
+      ],
+    ],
+    [
+      'instructors by ratingCodes alone, never counted',
       (s) => s.searchInstructors({ ratingCodes: ['ZZ-9'] }),
       [ratingsRoute],
     ],
     [
+      'instructors by a level-qualified MEI code alone, naming the alternatives',
+      (s) => s.searchInstructors({ ratingCodes: ['f/asme'] }),
+      [ratingsRoute, alternatives],
+    ],
+    [
+      'ground instructors by a CFII code alone, naming the alternatives with a flight instructorType',
+      (s) => s.searchInstructors({ instructorType: 'ground', ratingCodes: ['INSTA'] }),
+      [ratingsRoute, alternativesFlight],
+    ],
+    [
       'instructors by state and two rating codes',
       (s) => s.searchInstructors({ state: 'WA', ratingCodes: ['ZZ-9', 'ZZ-8'] }),
-      [ratingsRule],
+      [
+        instructorsCounted(
+          '2 flight or ground instructors match',
+          'flight or ground instructor',
+          'every requested code',
+        ),
+        ratingsRule,
+      ],
+    ],
+    [
+      'instructors by state and two rating codes, one of them AME',
+      (s) => s.searchInstructors({ state: 'WA', ratingCodes: ['ZZ-9', ' ame '] }),
+      [
+        instructorsCounted(
+          '2 flight or ground instructors match',
+          'flight or ground instructor',
+          'every requested code',
+        ),
+        ratingsRule,
+        alternatives,
+      ],
     ],
     [
       'instructors by firstName, state and ratingCodes',
       (s) => s.searchInstructors({ firstName: 'alpha', state: 'WA', ratingCodes: ['ZZ-9'] }),
-      [ratingsRoute, fewer],
+      [
+        instructorsCounted(
+          '1 flight or ground instructor matches',
+          'flight or ground instructor',
+          'the requested code',
+        ),
+        ratingsRoute,
+      ],
     ],
-    // An instructor search without its codes still needs an instructor certificate, so it is never counted.
     [
       'instructors by lastName and ratingCodes',
       (s) => s.searchInstructors({ lastName: 'credential', ratingCodes: ['ZZ-9'] }),
-      [ratingsRoute, fewer],
+      [
+        instructorsCounted(
+          '2 flight or ground instructors match',
+          'flight or ground instructor',
+          'the requested code',
+        ),
+        ratingsRoute,
+      ],
+    ],
+    [
+      'flight instructors by lastName and MEI',
+      (s) =>
+        s.searchInstructors({
+          lastName: 'credential',
+          instructorType: 'flight',
+          ratingCodes: ['MEI'],
+        }),
+      [
+        instructorsCounted('2 flight instructors match', 'flight instructor', 'the requested code'),
+        ratingsRoute,
+        alternatives,
+      ],
+    ],
+    [
+      'instructors by a name that holds no instructor certificate, with a CFII code',
+      (s) =>
+        s.searchInstructors({ lastName: 'credential', firstName: 'bravo', ratingCodes: ['CFII'] }),
+      [noInstructor('flight or ground instructor'), fewer],
+    ],
+    [
+      'ground instructors by a name holding only flight instructor certificates',
+      (s) =>
+        s.searchInstructors({
+          lastName: 'credential',
+          instructorType: 'ground',
+          ratingCodes: ['INST'],
+        }),
+      [noInstructor('ground instructor'), fewer],
+    ],
+    [
+      'instructors by a state no instructor lives in, with ratingCodes',
+      (s) => s.searchInstructors({ state: 'OR', ratingCodes: ['ZZ-9'] }),
+      [noInstructor('flight or ground instructor'), fewer],
     ],
     [
       'instructors by lastName alone',
@@ -2761,7 +3165,7 @@ describe('personal-data redaction', () => {
   });
 
   it('keeps the reason of an input invalid in both modes', async () => {
-    const state = 'state must be a two-letter state or territory code.';
+    const state = stateRule.message;
     for (const [run, reason, message] of [
       [
         (s) => s.verifyCertificates({ mode: 'name', lastName: ' ' }),
@@ -2876,11 +3280,11 @@ describe('personal-data redaction', () => {
     };
     const idOff = {
       message: 'mode id requires uniqueId.',
-      hint: 'Send the uniqueId from a faa_airmen_verify_certificate mode name result, or search with mode name and lastName.',
+      hint: 'Send the uniqueId from a faa_airmen_verify_certificate, faa_airmen_search_instructors, or faa_airmen_verify_remote_pilot result, or search with mode name and lastName.',
     };
     const idOn = {
       message: 'mode id requires uniqueId.',
-      hint: 'Send the uniqueId from a faa_airmen_verify_certificate mode name result, or search with mode name and both lastName and firstName.',
+      hint: 'Send the uniqueId from a faa_airmen_verify_certificate, faa_airmen_search_instructors, or faa_airmen_verify_remote_pilot result, or search with mode name and both lastName and firstName.',
     };
     const nameOff = {
       message: 'mode name requires lastName.',
@@ -2990,8 +3394,16 @@ describe('personal-data redaction', () => {
       [
         (s) => s.verifyCertificates({ ...lastNameOnly, state: 'Washington' }),
         'invalid_filter',
-        'state must be a two-letter state or territory code.',
-        'Send state as two letters, such as WA, or omit it.',
+        stateRule.message,
+        stateRule.hint,
+        true,
+        (s) => s.verifyCertificates({ ...full, state: 'WA' }),
+      ],
+      [
+        (s) => s.verifyCertificates({ ...lastNameOnly, state: 'ZZ' }),
+        'invalid_filter',
+        stateRule.message,
+        stateRule.hint,
         true,
         (s) => s.verifyCertificates({ ...full, state: 'WA' }),
       ],
@@ -3196,13 +3608,13 @@ describe('personal-data redaction', () => {
       [(s) => s.searchInstructors({ ...absent, state: 'WA' }), fewer, withoutState],
       [
         (s) => s.searchInstructors({ ...absent, ratingCodes: ['ZZ-9'] }),
-        `${ratingsRoute} ${fewer}`,
-        `${ratingsRoute} ${identifiersRoute}`,
+        `${noInstructor('flight or ground instructor')} ${fewer}`,
+        `${noInstructor('flight or ground instructor')} ${identifiersRoute}`,
       ],
       [
         (s) => s.searchInstructors({ ...absent, state: 'WA', ratingCodes: ['ZZ-9'] }),
-        `${ratingsRoute} ${fewer}`,
-        `${ratingsRoute} ${withoutState}`,
+        `${noInstructor('flight or ground instructor')} ${fewer}`,
+        `${noInstructor('flight or ground instructor')} ${withoutState}`,
       ],
       [
         (s) =>
@@ -3248,6 +3660,29 @@ describe('personal-data redaction', () => {
     });
     expect(nobody.enrichment.notice).toBe(
       `${limits} ${redactionNotice} ${absence} No person matches this name search even without certificateType. ${identifiersRoute}`,
+    );
+  });
+
+  it('counts a redacted full-name instructor search without its rating codes, itself an allowed call', async () => {
+    const service = registry(true);
+    const { lastName, firstName } = full;
+    const result = await service.searchInstructors({ lastName, firstName, ratingCodes: ['MEI'] });
+    expect(result.enrichment).toMatchObject({
+      totalCount: 0,
+      piiRedacted: true,
+      notice: `${limits} ${redactionNotice} ${absence} ${instructorsCounted('2 flight or ground instructors match', 'flight or ground instructor', 'the requested code')} ${ratingsRoute} ${alternatives}`,
+    });
+    expect((await service.searchInstructors({ lastName, firstName })).enrichment.totalCount).toBe(
+      2,
+    );
+    const ground = await service.searchInstructors({
+      lastName,
+      firstName,
+      instructorType: 'ground',
+      ratingCodes: ['MEI'],
+    });
+    expect(ground.enrichment.notice).toBe(
+      `${limits} ${redactionNotice} ${absence} ${noInstructor('ground instructor')} ${identifiersRoute}`,
     );
   });
 

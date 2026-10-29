@@ -4,7 +4,7 @@ description: Gates for faa_airmen_* lookups in the FAA releasable airmen snapsho
 license: Apache-2.0
 metadata:
   author: cyanheads
-  version: "1.0"
+  version: "1.1"
 ---
 
 ## Scope
@@ -36,7 +36,7 @@ The filters accept a rating code or type designator the reference doesn't list. 
 | ATP | `certificateType` `P` with `certificateLevel` `A`; `certificateType` `ATP` is rejected |
 | A 737 type rating | the exact designator from topic `type_ratings`: `B-737`, not `B737` |
 
-A pilot's instrument rating is the same code on the P certificate (`C/INSTA` reads as instrument airplane at commercial level).
+A pilot's instrument rating is the same code on the P certificate (`C/INSTA` reads as instrument airplane at commercial level), so a bare `INSTA` on `faa_airmen_verify_certificate` also matches pilots who are not instructors. Send CFII and MEI codes there with `certificateType` `F`. On `faa_airmen_search_instructors`, use `instructorType` `flight` or `both`; a G certificate carries none of these codes.
 
 ### One call ANDs its codes
 
@@ -52,10 +52,10 @@ All codes in one `ratingCodes` or `typeRatings` list must sit on the same certif
 
 Before saying a person lacks a credential:
 
-1. Read the zero-result `notice`. On `faa_airmen_verify_certificate` it says how many people the name matched without the credential filters, which separates a name miss from a credential miss.
+1. Read the zero-result `notice`. On `faa_airmen_verify_certificate` it says how many people the name matched without the credential filters, and on `faa_airmen_search_instructors` how many instructors of the requested type the name and location filters matched without `ratingCodes`. That separates a name miss from a credential miss.
 2. Confirm every code and designator against `faa_airmen_list_reference`.
 3. Run every alternative code (previous gate).
-4. Page to the end. Pages are cut to a size budget and can hold far fewer people than `limit`, so follow `nextOffset` while `hasMore` is true; a short page is not the last one.
+4. Page to the end: follow `nextOffset` while `hasMore` is true. A page the response size budget cut holds fewer people than `limit`, and its `notice` says so and names the offset to continue from. Only `hasMore: false` marks the last page.
 
 Even then, report "not listed in this snapshot", never "does not hold".
 

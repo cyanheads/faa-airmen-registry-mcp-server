@@ -54,10 +54,20 @@ import {
   certificateTypeFor,
   describeCode,
   FAA_SOURCE_URL,
+  instructorAlternatives,
+  NON_STATE_CODES,
   obsoleteRating,
+  STATE_CODES,
   staticReference,
+  UNIQUE_ID_SOURCE,
 } from './reference.js';
-import type { Provenance, SnapshotDatabase, SnapshotLease, SourceFamily } from './types.js';
+import type {
+  Provenance,
+  RefreshState,
+  SnapshotDatabase,
+  SnapshotLease,
+  SourceFamily,
+} from './types.js';
 
 const limits =
   'Snapshot presence and absence do not determine current certification, operating privileges, training currency, medical fitness, or eligibility; address-withheld airmen are omitted.';
@@ -116,14 +126,14 @@ const fieldRules = {
   uniqueId: {
     reason: 'invalid_identity',
     expected: 'A or C plus seven digits, such as A9999999',
-    hint: 'Copy uniqueId from a faa_airmen_verify_certificate mode name result; it is not a certificate number.',
+    hint: `Copy uniqueId from ${UNIQUE_ID_SOURCE}; it is not a certificate number.`,
   },
   lastName: nameRule('lastName', 'LAST NAME', ''),
   firstName: nameRule('firstName', 'FIRST NAME', ', or omit it'),
   state: {
     reason: 'invalid_filter',
-    expected: 'a two-letter state or territory code',
-    hint: 'Send state as two letters, such as WA, or omit it.',
+    expected: 'a two-letter USPS state, territory, or military code',
+    hint: `Send state as a two-letter USPS code: a state such as WA, or ${joined(NON_STATE_CODES, 'or')}; omit it otherwise, since airmen with foreign addresses carry no state.`,
   },
   city: {
     reason: 'invalid_filter',
@@ -328,7 +338,8 @@ function names(input: NameInput, serving: Serving): NormalizedName {
   const state = text(input.state, 'state', { serving }),
     city = text(input.city, 'city', { serving }),
     rawZip = text(input.zipCode, 'zipCode', { serving });
-  if (state && !/^[A-Z]{2}$/.test(state)) invalid('state', serving);
+  // A code outside the set can never match a record, so it fails instead of returning an empty page.
+  if (state && !STATE_CODES.has(state)) invalid('state', serving);
   if (rawZip && !/^\d{5}(?:-?\d{4})?$/.test(rawZip)) invalid('zipCode', serving);
   const zipCode = rawZip?.length === 9 ? `${rawZip.slice(0, 5)}-${rawZip.slice(5)}` : rawZip;
   const nameMatch = input.nameMatch ?? 'words';
@@ -355,7 +366,7 @@ function selector(input: IdentityInput, serving: Serving): Selector {
       fail(
         'invalid_identity',
         'mode id requires uniqueId.',
-        `Send the uniqueId from a faa_airmen_verify_certificate mode name result, or search with mode name and ${fullName ?? 'lastName'}.`,
+        `Send the uniqueId from ${UNIQUE_ID_SOURCE}, or search with mode name and ${fullName ?? 'lastName'}.`,
       );
     names(input, serving);
     return { mode: 'id', uniqueId: id(input.uniqueId) };
@@ -664,6 +675,8 @@ const retryKeeps: Record<PersonTool, readonly string[]> = {
 const redactedKeeps = ['lastName', 'firstName', 'city', 'zipCode'] as const;
 /** The filters a zero-result person query actually sent, after normalization. */
 export interface SentFilters {
+  /** faa_airmen_verify_certificate only: the certificate type code sent. */
+  certificateType?: string;
   /** Rating codes and type ratings sent, after normalization collapses repeats. */
   codeCount: number;
   /** Credential filters sent. */
@@ -672,16 +685,51 @@ export interface SentFilters {
   idExists?: boolean;
   /** Name and location filters sent. */
   identity: readonly string[];
+  /** Instructor searches only: the certificate types searched. */
+  instructorType?: InstructorType;
+  /** Rating codes sent, without their levels. */
+  ratingCodes: readonly string[];
   /** Sent filters a retry must keep; a stricter serving mode adds to this set. */
   required: readonly string[];
   tool: PersonTool;
-  /** Verify name mode with credentials: people the name and location filters alone match. */
+  /**
+   * A name or location search with credential filters: the people it matches without them, among
+   * the searched instructor types on faa_airmen_search_instructors.
+   */
   withoutCredentials?: number;
+}
+type InstructorType = NonNullable<InstructorInput['instructorType']>;
+/** How a counted instructor zero result names the types searched. */
+const instructorNouns: Record<InstructorType, string> = {
+  flight: 'flight instructor',
+  ground: 'ground instructor',
+  both: 'flight or ground instructor',
+};
+/** The count sentence: how many the search matches without its credential filters. */
+function countedSentence(sent: SentFilters, counted: number, inputs: string, wanted: string) {
+  if (!sent.instructorType)
+    return counted
+      ? `${counted} ${counted === 1 ? 'person matches' : 'people match'} this name search without ${inputs}, and none holds a ${wanted} in this snapshot.`
+      : `No person matches this name search even without ${inputs}.`;
+  const noun = instructorNouns[sent.instructorType];
+  return counted
+    ? `${counted} ${noun}${counted === 1 ? ' matches' : 's match'} this search without ratingCodes, and none holds a ${noun} certificate carrying ${sent.codeCount > 1 ? 'every requested code' : 'the requested code'} in this snapshot.`
+    : `No ${noun} matches this search even without ratingCodes.`;
 }
 function joined(items: readonly string[], word: 'and' | 'or'): string {
   return items.length > 1
     ? `${items.slice(0, -1).join(', ')} ${word} ${items.at(-1)}`
     : items.join('');
+}
+/**
+ * What each CFII or MEI alternative's retry must add to reach F certificates. A bare CFII code on
+ * faa_airmen_verify_certificate also matches a pilot (P) certificate's instrument rating unless the
+ * call sent type F, and a ground-only instructor search can never match an alternative.
+ */
+function alternativesRetry(sent: SentFilters): string | undefined {
+  if (sent.tool === 'faa_airmen_verify_certificate')
+    return sent.certificateType === 'F' ? undefined : 'certificateType F';
+  return sent.instructorType === 'ground' ? 'instructorType flight or both' : undefined;
 }
 /** Name and location filters a retry may drop: never a required one, never the only filter left. */
 function droppable(sent: SentFilters): string[] {
@@ -705,6 +753,8 @@ export function zeroResultNotice(sent: SentFilters): string {
     `the ${credentialFilters[filter].label} with faa_airmen_list_reference topic ${credentialFilters[filter].topic}`;
   const routed = sent.credentials.filter((filter) => credentialFilters[filter].topic);
   const coded = routed.filter((filter) => credentialFilters[filter].codes);
+  // Sent rating codes always produce the coded sentence, so the alternatives follow the ratings route.
+  const alternatives = instructorAlternatives(sent.ratingCodes, alternativesRetry(sent));
   // Rating and type-rating lookups share one sentence, so the same-certificate rule is stated once.
   const routes = [
     ...routed
@@ -715,6 +765,7 @@ export function zeroResultNotice(sent: SentFilters): string {
           `Check ${joined(coded.map(lookup), 'and')}${sent.codeCount > 1 ? '; all must occur on the same certificate' : ''}.`,
         ]
       : []),
+    ...(alternatives ? [alternatives] : []),
   ];
   const parts = [
     'No record matched this releasable snapshot. This does not establish that a person is uncertificated.',
@@ -736,13 +787,8 @@ export function zeroResultNotice(sent: SentFilters): string {
       parts.push(
         'No candidate matching the name holds a remote pilot (U) certificate; use faa_airmen_verify_certificate in name mode to check the name and other certificates.',
       );
-    else if (counted !== undefined)
-      parts.push(
-        counted
-          ? `${counted} ${counted === 1 ? 'person matches' : 'people match'} this name search without ${inputs}, and none holds a ${wanted} in this snapshot.`
-          : `No person matches this name search even without ${inputs}.`,
-      );
-    // A counted name match leaves only the credentials to check; a counted miss only the name.
+    else if (counted !== undefined) parts.push(countedSentence(sent, counted, inputs, wanted));
+    // A counted name match leaves only the credentials to check; a counted miss only the filters.
     if (counted !== 0) parts.push(...routes);
     const nameSent = sent.identity.some(
       (filter) => filter === 'lastName' || filter === 'firstName',
@@ -755,7 +801,7 @@ export function zeroResultNotice(sent: SentFilters): string {
       : namesKept
         ? `, then retry without ${joined(drop, 'or')}`
         : ', then retry with fewer name or location filters';
-    if (!counted && (nameSent || !routes.length))
+    if (counted === 0 || (counted === undefined && (nameSent || !routes.length)))
       parts.push(`Check faa_airmen_list_reference with topic identifiers${retry}.`);
   }
   return parts.join(' ');
@@ -835,7 +881,8 @@ function finalPage<T>(
   const returnedCount = selected.length,
     next = page.offset + returnedCount;
   const remaining = returnedCount > 0 && next < total,
-    atPagingCap = remaining && next > 10000;
+    atPagingCap = remaining && next > 10000,
+    hasMore = remaining && !atPagingCap;
   const extra =
     total === 0
       ? empty
@@ -843,6 +890,11 @@ function finalPage<T>(
         ? 'This page is past the available results; repeat the same tool with offset 0.'
         : '';
   const oversized = selected.length === 1 && responseBytes() > pageBudget;
+  /**
+   * Without it a cut page reads like the last one to a caller that stops at returnedCount < limit.
+   * The estimate never measures the page sentences; its 4096-byte reserve covers them.
+   */
+  const cut = returnedCount < entries.length && hasMore;
   const enrichment = enrichmentFor(selected);
   return {
     entries: selected,
@@ -850,14 +902,17 @@ function finalPage<T>(
       ...enrichment,
       totalCount: total,
       returnedCount,
-      hasMore: remaining && !atPagingCap,
-      nextOffset: remaining && !atPagingCap ? next : null,
+      hasMore,
+      nextOffset: hasMore ? next : null,
       atPagingCap,
       notice: [
         enrichment.notice,
         extra,
         clamped ? limitClamped : '',
         atPagingCap ? 'Narrow the filters to reach remaining results within the offset cap.' : '',
+        cut
+          ? `The response size budget ended this page before limit ${page.limit}; more results remain, so repeat the call with offset ${next}.`
+          : '',
         oversized
           ? 'One complete record exceeds the response byte budget; all source credentials are retained.'
           : '',
@@ -870,15 +925,24 @@ function finalPage<T>(
 
 /** One paged person query and how each matched person becomes a result. */
 interface PeopleQuery<T> {
+  /** faa_airmen_verify_certificate only: the certificate type code sent. */
+  certificateType?: string;
   /** Whether the requested limit exceeded the maximum. */
   clamped: boolean;
   /** Rating codes and type ratings sent, after repeats collapse. */
   codeCount: number;
   credentials: CredentialFilter[];
   filters: AppliedFilters;
+  /**
+   * Instructor searches only: the types searched and their certificate predicate, which a zero
+   * result's count keeps when it drops the rating codes.
+   */
+  instructor?: { type: InstructorType; certificate: Where };
   page: Required<Paging>;
   project(airman: Airman, certificates: Certificate[]): T;
   qualify?: Where;
+  /** Rating codes sent, without their levels. */
+  ratingCodes: string[];
   /** The certificates a result returns: the only records its source-quality check reads. */
   returned(match: T): Certificate[];
   selector: Selector | NormalizedName;
@@ -917,8 +981,7 @@ export class AirmenRegistryService {
           retryable: false,
         });
       const result = run(lease);
-      // An unreadable refresh record must not fail a lookup over a complete generation.
-      const refresh = await this.mirror.refreshState().catch(() => null);
+      const refresh = await this.mirror.refreshState();
       if (refresh?.status === 'failed') {
         const interrupted = 'was interrupted before it recorded a result';
         /**
@@ -956,14 +1019,17 @@ export class AirmenRegistryService {
     query: PeopleQuery<T>,
     ctx?: Context,
   ): Promise<QueryResult<{ matches: T[] }, ListEnrichment>> {
-    const { selector: selectorValue, page, qualify } = query;
+    const { selector: selectorValue, page } = query;
     const identity = identityWhere(selectorValue);
-    const where = qualify
-      ? {
-          sql: `${identity.sql} AND EXISTS(SELECT 1 FROM certificates c WHERE c.unique_id=a.unique_id AND ${qualify.sql})`,
-          bindings: [...identity.bindings, ...qualify.bindings],
-        }
-      : identity;
+    /** The identity predicate, narrowed to people holding one certificate that `qualify` matches. */
+    const holding = (qualify?: Where): Where =>
+      qualify
+        ? {
+            sql: `${identity.sql} AND EXISTS(SELECT 1 FROM certificates c WHERE c.unique_id=a.unique_id AND ${qualify.sql})`,
+            bindings: [...identity.bindings, ...qualify.bindings],
+          }
+        : identity;
+    const where = holding(query.qualify);
     return this.read(
       Boolean(
         ('city' in selectorValue && selectorValue.city) ||
@@ -990,37 +1056,43 @@ export class AirmenRegistryService {
             certs.get(row.unique_id ?? '') ?? [],
           ),
         );
-        const sent = (): SentFilters =>
-          'uniqueId' in selectorValue
-            ? {
-                tool: query.tool,
-                credentials: query.credentials,
-                codeCount: query.codeCount,
-                identity: [],
-                required: [],
-                // bun:sqlite reports a missing row as null, better-sqlite3 as undefined.
-                idExists: Boolean(
-                  lease.db
-                    .prepare('SELECT 1 FROM airmen WHERE unique_id=?')
-                    .get(selectorValue.uniqueId),
-                ),
-              }
-            : {
-                tool: query.tool,
-                credentials: query.credentials,
-                codeCount: query.codeCount,
-                identity: identityFilters.filter((filter) => selectorValue[filter]),
-                required: [
-                  ...retryKeeps[query.tool],
-                  ...(this.serving.redacted ? redactedKeeps : []),
-                ],
-                /**
-                 * Only verify's search without credential filters is the identity predicate alone; an
-                 * instructor search without its codes still needs an instructor certificate.
-                 */
-                ...(query.tool === 'faa_airmen_verify_certificate' &&
-                  query.credentials.length > 0 && { withoutCredentials: count(identity) }),
-              };
+        const common = {
+          tool: query.tool,
+          credentials: query.credentials,
+          codeCount: query.codeCount,
+          ratingCodes: query.ratingCodes,
+          ...(query.certificateType && { certificateType: query.certificateType }),
+          ...(query.instructor && { instructorType: query.instructor.type }),
+        };
+        const sent = (): SentFilters => {
+          if ('uniqueId' in selectorValue)
+            return {
+              ...common,
+              identity: [],
+              required: [],
+              // bun:sqlite reports a missing row as null, better-sqlite3 as undefined.
+              idExists: Boolean(
+                lease.db
+                  .prepare('SELECT 1 FROM airmen WHERE unique_id=?')
+                  .get(selectorValue.uniqueId),
+              ),
+            };
+          const sentIdentity = identityFilters.filter((filter) => selectorValue[filter]);
+          return {
+            ...common,
+            identity: sentIdentity,
+            required: [...retryKeeps[query.tool], ...(this.serving.redacted ? redactedKeeps : [])],
+            /**
+             * One extra count without the credential filters separates a name or location miss from
+             * a credential miss; an instructor search keeps its instructor certificate types. A
+             * rating-only instructor search has nothing to count.
+             */
+            ...(query.credentials.length > 0 &&
+              sentIdentity.length > 0 && {
+                withoutCredentials: count(holding(query.instructor?.certificate)),
+              }),
+          };
+        };
         const finalized = finalPage(
           matches,
           total,
@@ -1068,9 +1140,11 @@ export class AirmenRegistryService {
         selector: selected,
         page,
         clamped,
+        ...(certificateType && { certificateType }),
         filters: { ...selected, ...page, ...echo },
         credentials,
         codeCount: ratings.length + typeRatings.length,
+        ratingCodes: ratings.map(({ code }) => code),
         ...(credentials.length && {
           qualify: certificateWhere(certificateType ? [certificateType] : [], {
             ...(certificateLevel && { level: certificateLevel }),
@@ -1103,6 +1177,7 @@ export class AirmenRegistryService {
         filters: { ...selected, ...page, certificateType: 'U' },
         credentials: [],
         codeCount: 0,
+        ratingCodes: [],
         qualify: certificateWhere(['U']),
         project: (airman, records) => ({
           airman,
@@ -1154,6 +1229,8 @@ export class AirmenRegistryService {
         },
         credentials: ratings.length ? ['ratingCodes'] : [],
         codeCount: ratings.length,
+        ratingCodes: ratings.map(({ code }) => code),
+        instructor: { type: instructorType, certificate: certificateWhere(types) },
         qualify: certificateWhere(types, { ratings }),
         project: (airman, records) => ({
           airman,
@@ -1198,7 +1275,7 @@ export class AirmenRegistryService {
             this.serving,
             records.length
               ? ''
-              : 'No pilot-family certificate was reported; use faa_airmen_verify_certificate for non-pilot credentials.',
+              : 'No pilot-family certificate was reported; faa_airmen_verify_certificate mode id returns every certificate, non-pilot ones included.',
             hasSourceQualityIssue(records),
           ),
         };
@@ -1332,24 +1409,24 @@ export class AirmenRegistryService {
         : status.importPolicy.includeLocation
           ? 'enabled'
           : 'disabled';
+      const refreshState = mirrorRefreshState(status.refresh);
       const mirrorStatus: NonNullable<ReferenceData['mirrorStatus']> = {
         state: status.status,
-        refreshState:
-          status.refresh?.status === 'in_progress'
-            ? 'running'
-            : status.refresh?.status === 'failed'
-              ? 'failed'
-              : 'idle',
+        refreshState,
         ...(status.provenance && { provenance: status.provenance }),
         ...(status.refresh?.status === 'failed' && {
           lastRefreshFailure: status.refresh.stage ?? 'unavailable',
         }),
       };
+      const record =
+        refreshState === 'unreadable'
+          ? ' Refresh record: REFRESH.json in the mirror directory is unreadable; it records only the last refresh outcome, so the operator can remove it, and the next refresh rewrites it.'
+          : '';
       return finish(
         [
           {
             code: 'mirror_status',
-            guidance: `Mirror state: ${status.status}. Initialize with faa-airmen-registry-mirror init; refresh with faa-airmen-registry-mirror refresh. Location import policy: ${policy}. Personal-data redaction: ${this.serving.redacted ? 'on, so city, ZIP, and medical fields are withheld and name searches require both lastName and firstName; the operator turns it off with FAA_AIRMEN_REDACT_PII=false' : 'off'}.`,
+            guidance: `Mirror state: ${status.status}.${record} Initialize with faa-airmen-registry-mirror init; refresh with faa-airmen-registry-mirror refresh. Location import policy: ${policy}. Personal-data redaction: ${this.serving.redacted ? 'on, so city, ZIP, and medical fields are withheld and name searches require both lastName and firstName; the operator turns it off with FAA_AIRMEN_REDACT_PII=false' : 'off'}.`,
             sourceUrls: [FAA_SOURCE_URL],
           },
         ],
@@ -1358,6 +1435,26 @@ export class AirmenRegistryService {
       );
     }
     return finish(staticReference(topic, this.serving.redacted), null);
+  }
+}
+/** The mirror_status refresh lifecycle state for the last recorded refresh. */
+function mirrorRefreshState(
+  refresh: RefreshState | null,
+): NonNullable<ReferenceData['mirrorStatus']>['refreshState'] {
+  if (!refresh) return 'idle';
+  switch (refresh.status) {
+    case 'complete':
+      return 'idle';
+    case 'in_progress':
+      return 'running';
+    case 'failed':
+      return 'failed';
+    case 'unreadable':
+      return 'unreadable';
+    default: {
+      const unhandled: never = refresh;
+      return unhandled;
+    }
   }
 }
 let service: AirmenRegistryService | undefined;

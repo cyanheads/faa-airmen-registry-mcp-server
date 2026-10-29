@@ -4,6 +4,7 @@
  */
 import { z } from '@cyanheads/mcp-ts-core';
 import { NAME_MATCHES, REFERENCE_TOPICS } from '@/services/airmen/contracts.js';
+import { UNIQUE_ID_SOURCE } from '@/services/airmen/reference.js';
 
 type Defined<T> = { [K in keyof T]: Exclude<T[K], undefined> };
 
@@ -18,7 +19,12 @@ const sourceFamily = z.enum(['pilot', 'nonpilot']).describe('FAA source file fam
 const identityFields = {
   firstName: z.string().describe('Complete source FIRST NAME, including middle names.'),
   lastName: z.string().describe('Complete source LAST NAME, including suffixes.'),
-  state: z.string().optional().describe('Source state or territory code, when reported.'),
+  state: z
+    .string()
+    .optional()
+    .describe(
+      'Source USPS state, territory, or military code, when reported; absent for foreign addresses.',
+    ),
   country: z.string().optional().describe('Source country, when reported.'),
   region: z.string().optional().describe('Source FAA region, when reported.'),
   city: z
@@ -190,11 +196,18 @@ export const singleEnrichment = {
 /** Mandatory enrichment for every paged success, including empty pages. */
 export const listEnrichment = {
   ...singleEnrichment,
+  notice: z
+    .string()
+    .describe(
+      'Snapshot limitations, absence guidance, source-quality notices for the returned records, paging notices (a clamped limit, the offset cap, or a page the response size budget ended before limit), and operational notices; may be empty.',
+    ),
   totalCount: z.number().int().describe('Total matches after filtering, before paging.'),
   returnedCount: z
     .number()
     .int()
-    .describe('Complete people or reference entries returned on this page.'),
+    .describe(
+      'Complete people or reference entries returned on this page. Fewer than limit means the results ended or the response size budget ended the page; while hasMore is true, the notice names the offset to continue from.',
+    ),
   hasMore: z.boolean().describe('Whether another page is reachable within the offset cap.'),
   nextOffset: z
     .number()
@@ -222,7 +235,9 @@ export const nameInput = {
   state: z
     .string()
     .optional()
-    .describe('Two-letter state or territory; trimmed and uppercased. Blank means unset.'),
+    .describe(
+      'Two-letter USPS code: one of the 50 states, DC, PR, GU, VI, MP, AS, FM, MH, PW, or the military AA, AE, AP; trimmed and uppercased. Airmen with foreign addresses carry no state. Blank means unset.',
+    ),
   city: z
     .string()
     .optional()
@@ -246,6 +261,7 @@ export const nameInput = {
       'How each supplied name field matches; default words for name searches. words: the field equals the term or continues with a space after it; only a space separates words, so a hyphenated or apostrophe name is one word. exact: the whole field. prefix: the field begins with the term, also mid-word; rejected while personal-data redaction is on.',
     ),
 };
+const uniqueIdDescription = `Opaque FAA Unique ID from ${UNIQUE_ID_SOURCE}, A or C plus seven digits, for example A9999999; not a certificate number.`;
 /** Flat identity selector; service validates mutually exclusive modes. */
 export const identityInput = {
   mode: z
@@ -257,12 +273,10 @@ export const identityInput = {
     .string()
     .regex(
       /^\s*(?:[AaCc][0-9]{7}\s*)?$/,
-      'Must be A or C plus seven digits, such as A9999999, from a faa_airmen_verify_certificate mode name result; blank means unset',
+      `Must be A or C plus seven digits, such as A9999999, from ${UNIQUE_ID_SOURCE}; blank means unset`,
     )
     .optional()
-    .describe(
-      'Opaque FAA Unique ID returned by faa_airmen_verify_certificate in name mode, A or C plus seven digits, for example A9999999; not a certificate number. Trimmed and uppercased.',
-    ),
+    .describe(`${uniqueIdDescription} Trimmed and uppercased.`),
   ...nameInput,
 };
 /** One rating filter; the instructor and certificate searches share its parsing. */
@@ -298,11 +312,9 @@ export const idInput = z
       .string()
       .regex(
         /^\s*[AaCc][0-9]{7}\s*$/,
-        'Must be A or C plus seven digits, such as A9999999, from a faa_airmen_verify_certificate mode name result',
+        `Must be A or C plus seven digits, such as A9999999, from ${UNIQUE_ID_SOURCE}`,
       )
-      .describe(
-        'Opaque FAA Unique ID from faa_airmen_verify_certificate, A or C plus seven digits, for example A9999999; not a certificate number.',
-      ),
+      .describe(uniqueIdDescription),
   })
   .strict();
 /** All supported static and dynamic reference topics. */
@@ -366,9 +378,9 @@ export const referenceOutput = z.object({
     .object({
       state: z.enum(['missing', 'ready', 'unavailable']).describe('Published mirror availability.'),
       refreshState: z
-        .enum(['idle', 'running', 'failed'])
+        .enum(['idle', 'running', 'failed', 'unreadable'])
         .describe(
-          'Most recent refresh lifecycle state: idle when none is recorded or the last one completed, running while one is in progress within its 40-minute deadline, failed when the last one did not complete (see lastRefreshFailure).',
+          'Most recent refresh lifecycle state: idle when none is recorded or the last one completed, running while one is in progress within its 40-minute deadline, failed when the last one did not complete (see lastRefreshFailure), unreadable when its record cannot be read or is not a valid refresh record, which leaves state and lookups unaffected; the entry guidance names the repair.',
         ),
       provenance: provenanceSchema
         .optional()

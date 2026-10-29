@@ -5,6 +5,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getAirmenRegistryService } from '@/services/airmen/airmen-registry-service.js';
+import { INSTRUCTOR_RATING_MAP } from '@/services/airmen/reference.js';
 import { formatResult, listTrailer } from '../render.js';
 import {
   airmanSchema,
@@ -42,7 +43,7 @@ export const verifyCertificateTool = tool('faa_airmen_verify_certificate', {
         .max(11)
         .optional()
         .describe(
-          'One to eleven rating codes, repeats collapsed; every code must occur on the same certificate as every other requested credential, never across certificates.',
+          `One to eleven rating codes, repeats collapsed; every code must occur on the same certificate as every other requested credential, never across certificates. ${INSTRUCTOR_RATING_MAP}`,
         ),
       typeRatings: z
         .array(

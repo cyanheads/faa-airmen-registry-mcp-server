@@ -120,7 +120,7 @@ export interface ReferenceEntry extends Code {
 export interface ReferenceMirrorStatus {
   lastRefreshFailure?: MirrorStage;
   provenance?: Provenance;
-  refreshState: 'idle' | 'running' | 'failed';
+  refreshState: 'idle' | 'running' | 'failed' | 'unreadable';
   state: 'missing' | 'ready' | 'unavailable';
 }
 /** Normalized filter values echoed independently from domain output. */

@@ -2,22 +2,25 @@
  * @fileoverview Classified mirror failures without source records or local paths.
  * @module services/airmen/mirror-error
  */
+/** Every safe operator-facing failure stage, suitable for lifecycle status. */
+export const MIRROR_STAGES = [
+  'acquisition',
+  'schema',
+  'validation',
+  'disk',
+  'lock',
+  'integrity',
+  'missing',
+  'unavailable',
+  // The caller's signal stopped the run.
+  'cancelled',
+  // One of the lifecycle's own deadlines expired.
+  'timeout',
+  // A refresh record outlived the refresh deadline: its writer ended without recording a result.
+  'interrupted',
+] as const;
 /** A safe operator-facing failure stage, suitable for lifecycle status. */
-export type MirrorStage =
-  | 'acquisition'
-  | 'schema'
-  | 'validation'
-  | 'disk'
-  | 'lock'
-  | 'integrity'
-  | 'missing'
-  | 'unavailable'
-  /** The caller's signal stopped the run. */
-  | 'cancelled'
-  /** One of the lifecycle's own deadlines expired. */
-  | 'timeout'
-  /** A refresh record outlived the refresh deadline: its writer ended without recording a result. */
-  | 'interrupted';
+export type MirrorStage = (typeof MIRROR_STAGES)[number];
 
 /** Raw filesystem, parser and database exceptions never cross this boundary. */
 export class MirrorError extends Error {

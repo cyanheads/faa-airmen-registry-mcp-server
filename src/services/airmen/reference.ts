@@ -110,8 +110,63 @@ const ratings: Record<string, string> = {
   SUAS: 'SMALL UNMANNED AIRCRAFT SYSTEM',
   TPROP: 'TURBOPROPELLER POWERED',
 };
-const cfii = 'CFII is INSTA, INSTH, INSTI, or INSTP on a flight instructor (F) certificate';
-const mei = 'MEI is AME or ASME on F';
+/**
+ * USPS codes beyond the 50 states that FAA BASIC records carry: DC, the territories, the freely
+ * associated states, and the military AA, AE, and AP. Airmen with foreign addresses carry no state.
+ */
+export const NON_STATE_CODES = [
+  'DC',
+  'PR',
+  'GU',
+  'VI',
+  'MP',
+  'AS',
+  'FM',
+  'MH',
+  'PW',
+  'AA',
+  'AE',
+  'AP',
+] as const;
+/** Every state code a BASIC record can carry: the 50 states plus `NON_STATE_CODES`. */
+export const STATE_CODES: ReadonlySet<string> = new Set([
+  ...'AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY'.split(
+    ' ',
+  ),
+  ...NON_STATE_CODES,
+]);
+/** Where a Unique ID comes from: every tool whose results carry one on each `airman`. */
+export const UNIQUE_ID_SOURCE =
+  'a faa_airmen_verify_certificate, faa_airmen_search_instructors, or faa_airmen_verify_remote_pilot result';
+/** `A, B, or C`, the serial comma the instructor mapping is written with. */
+function series(items: readonly string[], word: 'and' | 'or'): string {
+  return items.length > 2
+    ? `${items.slice(0, -1).join(', ')}, ${word} ${items.at(-1)}`
+    : items.join(` ${word} `);
+}
+/** 14 CFR 61.5(c)–(d): the flight instructor (F) codes behind CFII and MEI, and the ground-only codes. */
+const cfiiCodes = ['INSTA', 'INSTH', 'INSTI', 'INSTP'];
+const meiCodes = ['AME', 'ASME'];
+const groundOnlyCodes = ['INST', 'ADV', 'BASIC'];
+const cfii = `CFII is ${series(cfiiCodes, 'or')} on a flight instructor (F) certificate`;
+const mei = `MEI is ${series(meiCodes, 'or')} on F`;
+/** The CFII, MEI, and ground-only mapping each `ratingCodes` description states once. */
+export const INSTRUCTOR_RATING_MAP = `${cfii}; ${mei}; ${series(groundOnlyCodes, 'and')} occur only on ground instructor (G) certificates.`;
+/** Sent codes, the shorthand included, after which a ratings route names the alternatives. */
+const alternativeCodes = new Set(['CFII', 'MEI', ...cfiiCodes, ...meiCodes]);
+/**
+ * The sentence that follows a zero result's ratings route when the sent codes (without their
+ * levels) name CFII, MEI, or one of their codes: one call per alternative, since codes in one call
+ * AND, each sent `retryWith` the filter that confines it to F when the call's own filters don't.
+ */
+export function instructorAlternatives(
+  codes: readonly string[],
+  retryWith?: string,
+): string | undefined {
+  return codes.some((code) => alternativeCodes.has(code))
+    ? `${cfii}, and ${mei}; send one call per alternative${retryWith ? `, with ${retryWith}` : ''}.`
+    : undefined;
+}
 /** 14 CFR 61.5(c)–(d) instructor ratings and their FAA codes. */
 const instructorGuidance = (note: string) => ({
   guidance: `${revision} ${note} (14 CFR 61.5(c)–(d)).`,
@@ -120,20 +175,20 @@ const instructorGuidance = (note: string) => ({
 /** Sourced per-entry rating guidance; every other rating cites HelpComm alone. */
 const ratingGuidance: Record<string, { guidance: string; sourceUrls: string[] }> = {
   ...Object.fromEntries(
-    ['INSTA', 'INSTH', 'INSTI', 'INSTP'].map((code) => [
+    cfiiCodes.map((code) => [
       code,
       instructorGuidance(`On F this is the instrument instructor rating; ${cfii}`),
     ]),
   ),
   ...Object.fromEntries(
-    ['AME', 'ASME'].map((code) => [
+    meiCodes.map((code) => [
       code,
       instructorGuidance(`On F this rating includes multiengine airplane instruction; ${mei}`),
     ]),
   ),
   ASE: instructorGuidance(`On F this is the single-engine airplane rating, not MEI; ${mei}`),
   ...Object.fromEntries(
-    ['INST', 'ADV', 'BASIC'].map((code) => [
+    groundOnlyCodes.map((code) => [
       code,
       instructorGuidance(`Occurs only on a ground instructor (G) certificate; ${cfii}`),
     ]),

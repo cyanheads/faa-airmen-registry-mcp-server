@@ -54,7 +54,7 @@ export const verifyRemotePilotTool = tool('faa_airmen_verify_remote_pilot', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'Invalid code, location, or filter combination after normalization.',
       recovery:
-        'Retry faa_airmen_verify_remote_pilot with a two-letter state and nameMatch words or exact (prefix only while personal-data redaction is off); omit blank optional filters, and use a limit of at least 1 and an offset of 0–10000.',
+        'Retry faa_airmen_verify_remote_pilot with a two-letter USPS state code and nameMatch words or exact (prefix only while personal-data redaction is off); omit blank optional filters, and use a limit of at least 1 and an offset of 0–10000.',
       retryable: false,
       thrownBy: 'service',
     },
