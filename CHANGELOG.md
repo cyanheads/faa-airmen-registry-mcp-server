@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.1](changelog/0.3.x/0.3.1.md) — 2026-10-29
+
+A published mirror stays ready when REFRESH.json is damaged, state accepts only the 62 USPS codes, and zero-result and size-cut pages say what to do next. Tool text states get_type_ratings scope and the Unique ID sources.
+
 ## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-10-28
 
 Publishes the faa-airmen-registry-guide Agent Skill over MCP and in every package, and moves to mcp-ts-core 0.13.18, which stops the HTTP transport's per-request memory growth under Bun.
