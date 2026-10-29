@@ -1,0 +1,30 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "faa-airmen-registry-mcp-server",
+  "version": "0.2.1",
+  "description": "Search FAA airmen certificates, ratings, and informational medical records via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "Casey Hand",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
+  "homepage": "https://github.com/cyanheads/faa-airmen-registry-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/faa-airmen-registry-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "typescript",
+    "bun",
+    "stdio",
+    "streamable-http",
+    "ai-agent",
+    "faa",
+    "airmen",
+    "aviation",
+    "pilot-certificates",
+    "type-ratings",
+    "local-mirror"
+  ]
+}
