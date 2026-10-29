@@ -1,6 +1,6 @@
 # faa-airmen-registry-mcp-server - Directory Structure
 
-Generated on: 2026-10-21 11:34:15
+Generated on: 2026-10-29 02:39:35
 
 ```text
 faa-airmen-registry-mcp-server/
@@ -26,9 +26,11 @@ faa-airmen-registry-mcp-server/
 ├── changelog/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
+│   ├── 0.3.x/
 │   └── template.md
 ├── docs/
-│   └── design.md
+│   ├── design.md
+│   └── snapshot.md
 ├── framework-skills/
 │   ├── add-app-tool/
 │   │   └── SKILL.md
@@ -37,6 +39,8 @@ faa-airmen-registry-mcp-server/
 │   ├── add-resource/
 │   │   └── SKILL.md
 │   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-skill/
 │   │   └── SKILL.md
 │   ├── add-test/
 │   │   └── SKILL.md
@@ -134,6 +138,9 @@ faa-airmen-registry-mcp-server/
 │   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
+├── skills/
+│   └── faa-airmen-registry-guide/
+│       └── SKILL.md
 ├── src/
 │   ├── cli/
 │   │   ├── mirror-command.ts
@@ -182,6 +189,8 @@ faa-airmen-registry-mcp-server/
 │   │   └── mirror-cli.test.ts
 │   ├── prompts/
 │   ├── resources/
+│   ├── scripts/
+│   │   └── mcpb-agent-docs.test.ts
 │   ├── smoke/
 │   └── tools/
 │       └── airmen-render.test.ts
@@ -200,7 +209,9 @@ faa-airmen-registry-mcp-server/
 ├── Dockerfile
 ├── LICENSE
 ├── manifest.json
+├── mcp.json
 ├── package.json
+├── plugin.json
 ├── README.md
 ├── server.json
 ├── tsconfig.build.json
