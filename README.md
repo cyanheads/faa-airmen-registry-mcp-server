@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.2.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/faa-airmen-registry-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/faa-airmen-registry-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/faa-airmen-registry-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.2.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/faa-airmen-registry-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.4.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/faa-airmen-registry-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/faa-airmen-registry-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -111,170 +111,49 @@ Agent-friendly output:
 
 - Provenance on every snapshot-backed response: source name, snapshot month, source age with a `stale` flag, generation ID, and the generation's location import policy, plus the normalized `appliedFilters`; `faa_airmen_list_reference` topic `mirror_status` returns the full record, including hashes, row counts, and source-quality warning counts
 - Whole-record paging: list tools return complete people within a ~24 KiB response budget, so `limit` (default 10, at most 50; a larger limit returns 50 with a notice) is an upper bound. `totalCount`, `returnedCount`, and `nextOffset` describe the actual page; offsets stop at 10,000, where `atPagingCap` asks for narrower filters
+- A published Agent Skill, `faa-airmen-registry-guide`, served over MCP as `skill://faa-airmen-registry-guide/SKILL.md` and shipped in the plugin, npm package, `.mcpb`, and image: mapping CFII, MEI, ATP, and type-rating shorthand to codes, one call per alternative code, name matches that miss silently, reading each rating at its own level, and the stop rule before reporting a credential absent
 - Typed failures that name the next call: `mirror_missing`, `location_access_disabled`, `pii_redacted`, `invalid_filter`, and the other declared reasons each carry a recovery step. A validation failure names the field and its expected form (`state must be a two-letter state or territory code.`), never the value, and empty pages still return totals and guidance
 
 ## Getting started
 
-### Public Hosted Instance
-
-A public instance is available at `https://faa-airmen-registry.caseyjhand.com/mcp` — no installation or snapshot required. It serves Streamable HTTP; each client takes its own config shape.
-
-For Claude Code:
+Connect to the hosted instance, no install or snapshot:
 
 ```sh
 claude mcp add --transport http faa-airmen-registry-mcp-server https://faa-airmen-registry.caseyjhand.com/mcp
 ```
 
-For Cline (`cline_mcp_settings.json`):
-
-```json
-{
-  "mcpServers": {
-    "faa-airmen-registry-mcp-server": {
-      "type": "streamableHttp",
-      "url": "https://faa-airmen-registry.caseyjhand.com/mcp"
-    }
-  }
-}
-```
-
-For Cursor (`mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "faa-airmen-registry-mcp-server": {
-      "url": "https://faa-airmen-registry.caseyjhand.com/mcp"
-    }
-  }
-}
-```
-
-Claude Desktop adds remote servers under Settings → Connectors.
-
 The hosted instance runs with redaction on: name searches need both first and last names, `nameMatch: "prefix"` and city/ZIP searches are refused, and medical lookups are unavailable. Whole leading words remain supported by the default `words` matching. For the full surface, self-host with `FAA_AIRMEN_REDACT_PII=false`.
 
-### Self-Hosted / Local
-
-A local install serves its own snapshot, so build it before connecting a client:
+Or run it locally. A local install serves its own snapshot, so build it before connecting a client:
 
 ```sh
 export FAA_AIRMEN_MIRROR_DIR="$HOME/.local/share/faa-airmen-registry-mcp-server"
 npx -y --package @cyanheads/faa-airmen-registry-mcp-server faa-airmen-registry-mirror init
 ```
 
-`init` downloads the current FAA archive (about 57 MB) and builds a SQLite generation of about 1.75 GB; it took about 12 minutes in testing. The importer also keeps a 1 GiB free-space reserve, so allow about 3 GB. The same CLI runs `verify`, `status`, `refresh`, and `prune`. `refresh` builds the next generation beside the current one (another ~1.75 GB) and never deletes old ones, since a running server may still be reading one. `status` reports how many superseded generations there are and their size. Stop every server process that uses the mirror, then run `prune`: it takes the writer lock, refuses unless the published snapshot is ready, deletes every generation `CURRENT` doesn't name, and prints what it removed and the bytes freed. Deleting a generation a server still has open can fail that server's lookups (Bun on macOS) or the deletion itself (Windows).
+`init` downloads the FAA archive (about 57 MB) and builds a ~1.75 GB snapshot in about 12 minutes; allow about 3 GB of disk. Point the MCP client at the same `FAA_AIRMEN_MIRROR_DIR`, and set `FAA_AIRMEN_REDACT_PII=false` on a personal install that wants the full surface. Refreshing, pruning old generations, and keeping city and ZIP are covered in [docs/snapshot.md](./docs/snapshot.md).
 
-Point the MCP client at the same `FAA_AIRMEN_MIRROR_DIR`; left unset, both use the platform user-data directory. To keep city and ZIP, set `FAA_AIRMEN_INCLUDE_LOCATION=true` for both import and serving; a snapshot imported without it needs a `refresh` after enabling. Output redaction is on by default and applies at serving time only; a personal local install that wants the full surface (medical lookups, partial-name and city/ZIP searches, city and ZIP in output) sets `FAA_AIRMEN_REDACT_PII=false` on the server.
+Then add it to Claude Code with the same snapshot directory:
 
-### MCP client configuration
-
-Add the following to your MCP client configuration file.
-
-```json
-{
-  "mcpServers": {
-    "faa-airmen-registry-mcp-server": {
-      "type": "stdio",
-      "command": "bunx",
-      "args": ["@cyanheads/faa-airmen-registry-mcp-server@latest"],
-      "env": {
-        "MCP_TRANSPORT_TYPE": "stdio",
-        "FAA_AIRMEN_MIRROR_DIR": "/absolute/path/to/airmen-mirror"
-      }
-    }
-  }
-}
+```sh
+claude mcp add faa-airmen-registry-mcp-server -e FAA_AIRMEN_MIRROR_DIR="$FAA_AIRMEN_MIRROR_DIR" -- npx -y @cyanheads/faa-airmen-registry-mcp-server
 ```
 
-Or with npx (no Bun required):
+For other clients, add this to the MCP config file:
 
 ```json
 {
   "mcpServers": {
     "faa-airmen-registry-mcp-server": {
-      "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cyanheads/faa-airmen-registry-mcp-server@latest"],
-      "env": {
-        "MCP_TRANSPORT_TYPE": "stdio",
-        "FAA_AIRMEN_MIRROR_DIR": "/absolute/path/to/airmen-mirror"
-      }
+      "args": ["-y", "@cyanheads/faa-airmen-registry-mcp-server"],
+      "env": { "FAA_AIRMEN_MIRROR_DIR": "/absolute/path/to/airmen-mirror" }
     }
   }
 }
 ```
 
-Or with Docker. The image keeps its snapshot in `/data/airmen`, so initialize a named volume first; run the same command with `refresh`, `verify`, or `status` for maintenance, and with `prune` once every server container using the volume is stopped:
-
-```sh
-docker volume create faa-airmen-data
-docker run --rm -v faa-airmen-data:/data/airmen ghcr.io/cyanheads/faa-airmen-registry-mcp-server:latest bun dist/cli/mirror.js init
-```
-
-```json
-{
-  "mcpServers": {
-    "faa-airmen-registry-mcp-server": {
-      "type": "stdio",
-      "command": "docker",
-      "args": ["run", "-i", "--rm", "-v", "faa-airmen-data:/data/airmen", "-e", "MCP_TRANSPORT_TYPE=stdio", "ghcr.io/cyanheads/faa-airmen-registry-mcp-server:latest"]
-    }
-  }
-}
-```
-
-For Streamable HTTP, start the server on loopback:
-
-```sh
-MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
-# Or from the image, published on loopback only:
-docker run --rm -p 127.0.0.1:3010:3010 -v faa-airmen-data:/data/airmen ghcr.io/cyanheads/faa-airmen-registry-mcp-server:latest
-# Server listens at http://127.0.0.1:3010/mcp
-```
-
-### Prerequisites
-
-- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
-- About 3 GB of persistent local storage for the snapshot; network access is needed only for `init` and `refresh`.
-- Under Node, `better-sqlite3` loads prebuilt bindings for macOS, Linux, and Windows on x64 and arm64 with no compiler step. Execution is tested on macOS under Node and Bun.
-
-### Installation
-
-1. **Clone the repository:**
-
-```sh
-git clone https://github.com/cyanheads/faa-airmen-registry-mcp-server.git
-```
-
-2. **Navigate into the directory:**
-
-```sh
-cd faa-airmen-registry-mcp-server
-```
-
-3. **Install dependencies:**
-
-```sh
-bun install
-```
-
-4. **Configure environment:**
-
-```sh
-cp .env.example .env
-# set FAA_AIRMEN_MIRROR_DIR, and FAA_AIRMEN_INCLUDE_LOCATION if you want city and ZIP
-# FAA_AIRMEN_REDACT_PII=false lifts serving-time redaction on a personal local install
-```
-
-5. **Build and initialize the snapshot:**
-
-```sh
-bun run rebuild
-node --env-file=.env dist/cli/mirror.js init
-```
-
-The CLI doesn't load `.env` itself; pass `--env-file=.env` or export the variables.
+For Docker, Streamable HTTP, or a source build, see [Running the server](#running-the-server).
 
 ## Configuration
 
@@ -298,7 +177,19 @@ See [`.env.example`](./.env.example) for the common framework overrides. Framewo
 
 ### Local development
 
-- **Build and run the production version**:
+Requires [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+) and about 3 GB of persistent local storage for the snapshot; network access is needed only for `init` and `refresh`. Under Node, `better-sqlite3` loads prebuilt bindings for macOS, Linux, and Windows on x64 and arm64 with no compiler step. Execution is tested on macOS under Node and Bun.
+
+- **Clone and install:**
+
+  ```sh
+  git clone https://github.com/cyanheads/faa-airmen-registry-mcp-server.git
+  cd faa-airmen-registry-mcp-server && bun install
+  cp .env.example .env
+  # set FAA_AIRMEN_MIRROR_DIR, and FAA_AIRMEN_INCLUDE_LOCATION if you want city and ZIP
+  # FAA_AIRMEN_REDACT_PII=false lifts serving-time redaction on a personal local install
+  ```
+
+- **Build, initialize the snapshot, and run:**
 
   ```sh
   # One-time build and snapshot
@@ -307,15 +198,31 @@ See [`.env.example`](./.env.example) for the common framework overrides. Framewo
 
   # Run the built server
   bun run start:stdio
-  # or
+  # or, on loopback at http://127.0.0.1:3010/mcp
   bun run start:http
   ```
 
-- **Run checks and tests**:
+  The CLI doesn't load `.env` itself; pass `--env-file=.env` or export the variables.
+
+- **Run checks and tests:**
+
   ```sh
-  bun run devcheck  # Lints, formats, type-checks, and more
-  bun run test      # Runs the test suite
+  bun run devcheck   # Lint, format, typecheck, security
+  bun run test       # Vitest test suite
+  bun run lint:mcp   # Validate MCP definitions against spec
   ```
+
+### Docker
+
+The image keeps its snapshot in `/data/airmen`, so initialize a named volume first; run the same command with `refresh`, `verify`, or `status` for maintenance, and with `prune` once every server container using the volume is stopped:
+
+```sh
+docker volume create faa-airmen-data
+docker run --rm -v faa-airmen-data:/data/airmen ghcr.io/cyanheads/faa-airmen-registry-mcp-server:latest bun dist/cli/mirror.js init
+docker run --rm -p 127.0.0.1:3010:3010 -v faa-airmen-data:/data/airmen ghcr.io/cyanheads/faa-airmen-registry-mcp-server:latest
+```
+
+The image defaults to HTTP transport, stateless session mode, and logs to `/var/log/faa-airmen-registry-mcp-server`; the last command publishes it on loopback only, at `http://127.0.0.1:3010/mcp`. To run it over stdio from an MCP client, use `"command": "docker"` with `"args": ["run", "-i", "--rm", "-v", "faa-airmen-data:/data/airmen", "-e", "MCP_TRANSPORT_TYPE=stdio", "ghcr.io/cyanheads/faa-airmen-registry-mcp-server:latest"]`. To build locally, `docker build -t faa-airmen-registry-mcp-server .`; OpenTelemetry peer dependencies are installed by default — build with `--build-arg OTEL_ENABLED=false` to omit them.
 
 ## Project structure
 
@@ -325,6 +232,7 @@ See [`.env.example`](./.env.example) for the common framework overrides. Framewo
 | `src/services/airmen` | FAA acquisition, streaming import, immutable snapshot lifecycle, queries, and reference tables. |
 | `src/cli` | The `faa-airmen-registry-mirror` operator CLI. |
 | `src/config` | Server-specific environment variable parsing and validation with Zod. |
+| `skills/` | The published `faa-airmen-registry-guide` Agent Skill for agents calling the tools. |
 | `tests/` | Synthetic-source lifecycle, query, and MCP contract tests. |
 
 ## Development guide
