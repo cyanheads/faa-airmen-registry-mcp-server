@@ -18,6 +18,7 @@ await createApp({
   name: 'faa-airmen-registry-mcp-server',
   title: 'faa-airmen-registry-mcp-server',
   sessionMode: 'stateless',
+  skills: 'skills',
   tools: [
     verifyCertificateTool,
     getTypeRatingsTool,
