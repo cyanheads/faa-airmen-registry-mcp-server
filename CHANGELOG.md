@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.2](changelog/0.3.x/0.3.2.md) — 2026-11-11 · 🛡️ Security
+
+Redact personal lookup fields in failed-call logs
+
 ## [0.3.1](changelog/0.3.x/0.3.1.md) — 2026-10-29
 
 A published mirror stays ready when REFRESH.json is damaged, state accepts only the 62 USPS codes, and zero-result and size-cut pages say what to do next. Tool text states get_type_ratings scope and the Unique ID sources.
