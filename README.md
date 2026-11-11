@@ -169,6 +169,8 @@ For Docker, Streamable HTTP, or a source build, see [Running the server](#runnin
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_HTTP_HOST` | HTTP bind address. | `127.0.0.1` |
 | `MCP_HTTP_PORT` | HTTP server port. | `3010` |
+| `MCP_HTTP_ENDPOINT_PATH` | HTTP endpoint path. Use a literal path such as `/mcp`. | `/mcp` |
+| `MCP_PUBLIC_URL` | Public HTTP(S) base URL. Omit user information, query parameters, and fragments. | Unset |
 | `MCP_SESSION_MODE` | HTTP session mode: `stateless`, `stateful`, or `auto`; a meaningful value overrides the server's `stateless` declaration. | `stateless` |
 | `MCP_AUTH_MODE` | Authentication: `none`, `jwt`, or `oauth`. | `none` |
 | `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`, etc.). | `info` |
@@ -176,11 +178,13 @@ For Docker, Streamable HTTP, or a source build, see [Running the server](#runnin
 
 See [`.env.example`](./.env.example) for the common framework overrides. Framework storage settings don't relocate the FAA snapshot.
 
+When failed-call payload logging is enabled, the server redacts `firstName`, `lastName`, `uniqueId`, `city`, and `zipCode` by key regardless of the serving-time privacy setting.
+
 ## Running the server
 
 ### Local development
 
-Requires [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+) and about 3 GB of persistent local storage for the snapshot; network access is needed only for `init` and `refresh`. Under Node, `better-sqlite3` loads prebuilt bindings for macOS, Linux, and Windows on x64 and arm64 with no compiler step. Execution is tested on macOS under Node and Bun.
+Requires [Bun v1.4.4](https://bun.sh/) or higher (or Node.js v24+) and about 3 GB of persistent local storage for the snapshot; network access is needed only for `init` and `refresh`. Under Node, `better-sqlite3` loads prebuilt bindings for macOS, Linux, and Windows on x64 and arm64 with no compiler step. Execution is tested on macOS under Node and Bun.
 
 - **Clone and install:**
 

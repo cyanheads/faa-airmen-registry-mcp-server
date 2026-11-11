@@ -228,6 +228,7 @@ describe('FAA tool production contracts', () => {
     redactPii: string | undefined,
     session: (request: Request) => Promise<T>,
     logs?: Record<string, unknown>[],
+    captureFailurePayloads = false,
   ): Promise<T> {
     const logsDir = logs && (await mkdtemp(join(tmpdir(), 'faa-logs-')));
     const child = spawn('bun', ['run', 'src/index.ts'], {
@@ -236,6 +237,7 @@ describe('FAA tool production contracts', () => {
         ...inherited,
         MCP_TRANSPORT_TYPE: 'stdio',
         MCP_LOG_LEVEL: logs ? 'debug' : 'error',
+        LOG_TOOL_FAILURE_PAYLOADS: String(captureFailurePayloads),
         ...(logsDir && { LOGS_DIR: logsDir }),
         FAA_AIRMEN_MIRROR_DIR: directory,
         FAA_AIRMEN_INCLUDE_LOCATION: 'false',
@@ -425,6 +427,90 @@ describe('FAA tool production contracts', () => {
       structuredContent: { found: true, hasReportedMedicalFields: true, piiRedacted: false },
     });
   });
+  it.each([
+    { redactPii: true, capture: false },
+    { redactPii: true, capture: true },
+    { redactPii: false, capture: true },
+  ])(
+    'keeps personal inputs out of failure logs (redaction=$redactPii, capture=$capture)',
+    async ({ redactPii, capture }) => {
+      const names = { firstName: 'PROBEQUUX', lastName: 'PROBEZYGON' };
+      const location = { city: 'PROBEVORTEX', zipCode: '99999-9876' };
+      const identity = { uniqueId: 'A9876543' };
+      const invalidIdentity = { uniqueId: 'PROBEINVALIDID' };
+      const verify = 'faa_airmen_verify_certificate';
+      const medical = 'faa_airmen_check_medical_status';
+      const cases = [
+        {
+          name: verify,
+          args: { mode: 'name', state: 'WA', ...names },
+          reason: 'mirror_missing',
+          hint: 'run the mirror init command',
+        },
+        {
+          name: verify,
+          args: { mode: 'name', ...names, ...location },
+          reason: redactPii ? 'pii_redacted' : 'location_access_disabled',
+          hint: redactPii ? 'without city or zipCode' : 'using name and state only',
+        },
+        {
+          name: medical,
+          args: identity,
+          reason: redactPii ? 'pii_redacted' : 'mirror_missing',
+          hint: redactPii ? 'FAA_AIRMEN_REDACT_PII=false' : 'run the mirror init command',
+        },
+        { name: medical, args: invalidIdentity, reason: 'invalid_arguments', hint: 'uniqueId' },
+      ];
+      const logs: Record<string, unknown>[] = [];
+      const requestIds = await stdio(
+        String(redactPii),
+        async (request) => {
+          const ids: string[] = [];
+          for (const { name, args, reason, hint } of cases) {
+            const result = await request('tools/call', { name, arguments: args });
+            expect(result).toMatchObject({
+              isError: true,
+              structuredContent: { error: { data: { reason, requestId: expect.any(String) } } },
+              content: [{ type: 'text', text: expect.stringContaining(hint) }],
+            });
+            const { error } = result.structuredContent as {
+              error: { data: { requestId: string } };
+            };
+            if (reason !== 'invalid_arguments') {
+              expect(error.data).toMatchObject({
+                recovery: { hint: expect.stringContaining(hint) },
+              });
+            }
+            ids.push(error.data.requestId);
+          }
+          return ids;
+        },
+        logs,
+        capture,
+      );
+      const payloads = logs.filter((record) =>
+        String(record.msg).startsWith('Tool failure payload:'),
+      );
+      expect(payloads).toHaveLength(capture ? cases.length : 0);
+      const written = JSON.stringify(logs);
+      for (const value of [
+        ...Object.values({ ...names, ...location, ...identity }),
+        invalidIdentity.uniqueId,
+      ]) {
+        expect(written).not.toContain(value);
+      }
+      if (!capture) return;
+
+      expect(payloads.map((record) => record.requestId)).toEqual(requestIds);
+      const redactedNames = { firstName: '[REDACTED]', lastName: '[REDACTED]' };
+      expect(payloads.map((record) => JSON.parse(String(record.toolInput)))).toEqual([
+        { mode: 'name', state: 'WA', ...redactedNames },
+        { mode: 'name', ...redactedNames, city: '[REDACTED]', zipCode: '[REDACTED]' },
+        { uniqueId: '[REDACTED]' },
+        { uniqueId: '[REDACTED]' },
+      ]);
+    },
+  );
   it('logs privacy-policy refusals below error on the real log sink, and other failures at error', async () => {
     await init().initialize();
     /** Each call's code and reason beside the pino level of its `Error in tool:` record, matched by request ID. */

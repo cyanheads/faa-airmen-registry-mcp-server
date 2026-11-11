@@ -5,6 +5,7 @@
  */
 
 import { createApp } from '@cyanheads/mcp-ts-core';
+import { sanitization } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from './config/server-config.js';
 import { checkMedicalStatusTool } from './mcp-server/tools/definitions/check-medical-status.tool.js';
 import { getTypeRatingsTool } from './mcp-server/tools/definitions/get-type-ratings.tool.js';
@@ -13,6 +14,8 @@ import { searchInstructorsTool } from './mcp-server/tools/definitions/search-ins
 import { verifyCertificateTool } from './mcp-server/tools/definitions/verify-certificate.tool.js';
 import { verifyRemotePilotTool } from './mcp-server/tools/definitions/verify-remote-pilot.tool.js';
 import { initAirmenRegistryService } from './services/airmen/airmen-registry-service.js';
+
+sanitization.setSensitiveFields(['firstName', 'lastName', 'uniqueId', 'city', 'zipCode']);
 
 await createApp({
   name: 'faa-airmen-registry-mcp-server',

@@ -2,8 +2,8 @@
 
 **Server:** faa-airmen-registry-mcp-server
 **Version:** 0.3.1
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.18`
-**Engines:** Bun ≥1.4.0, Node ≥24.0.0
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.22`
+**Engines:** Bun ≥1.4.4, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/server` ^2.4.0
 **Zod:** ^4.6.7
 
@@ -17,6 +17,7 @@
 - Never persist or return street addresses. Discard street columns before persistence; city and ZIP output require explicit operator opt-in.
 - `FAA_AIRMEN_REDACT_PII` is on by default for every transport and applies at serving time only; it never changes what the mirror imports. While on, name-mode searches need both `lastName` and `firstName`, `nameMatch: "prefix"` and `city`/`zipCode` filters are refused, city and ZIP are omitted from output even with `FAA_AIRMEN_INCLUDE_LOCATION=true`, and `faa_airmen_check_medical_status` refuses every call. Refusals carry the reason `pii_redacted`, and every successful response carries `piiRedacted`. A personal local install that wants the full surface sets `FAA_AIRMEN_REDACT_PII=false`.
 - Medical fields are informational FAA snapshot records. Never infer medical fitness, current operational privileges, instructor currency, or Part 107 recurrent-training currency.
+- Register `firstName`, `lastName`, `uniqueId`, `city`, and `zipCode` as sensitive fields before `createApp()` so opt-in failure-payload logs redact them in both serving modes.
 - A missing airman is absent from the releasable snapshot, not evidence that a person is unlicensed.
 - Raw FAA data and real personal fixtures must never be committed or packaged. Keep mirror data under `/data/`, excluded from Git, npm, MCPB, and Docker context; tests use synthetic identities.
 - `docs/idea.md` is private design input and must stay excluded from every publication surface.
